@@ -1,0 +1,11 @@
+// Local-only development signing configuration for the LedgerBar app target
+// (§6.2). Supply the non-secret team identifier through the invoking shell;
+// this file must never contain passwords, tokens, or API keys. Xcode-managed
+// automatic signing is required for the local Mac development profile. The
+// native gate separately validates the expected profile name/UUID after the
+// signed app is built. Test bundles use their own automatic signing settings
+// in project.yml and do not inherit an app profile.
+DEVELOPMENT_TEAM = $(LEDGERBAR_DEVELOPMENT_TEAM)
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = Apple Development
+PROVISIONING_PROFILE_SPECIFIER = $(LEDGERBAR_PROVISIONING_PROFILE_SPECIFIER)

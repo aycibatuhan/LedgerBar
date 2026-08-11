@@ -1,0 +1,25 @@
+.DS_Store
+.build/
+DerivedData/
+.swiftpm/
+*.xcuserstate
+xcuserdata/
+LedgerBar.xcodeproj/
+LedgerBar/NativeGateTests.sqlite*
+.private/
+.env
+*.p12
+*.pem
+*.key
+Secrets/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+CODEX.md
+OPENCODE.md
+CURSOR.md
+
+# SimpleFIN capture artifacts: raw is always deleted by the tool, but belt-and-braces
+.simplefin-capture-raw-*.json
+simplefin-shape-fixture.json

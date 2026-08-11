@@ -1,0 +1,85 @@
+# XcodeGen source for the LedgerBar app bundle (§6.2). Never hand-edit the
+# generated pbxproj; regenerate with `xcodegen generate` (version pinned in
+# Tools/xcodegen-version.txt — must report exactly 2.46.0).
+name: LedgerBar
+options:
+  bundleIdPrefix: com.ledgerbar
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+packages:
+  LedgerBarPackage:
+    path: .
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+targets:
+  LedgerBar:
+    type: application
+    platform: macOS
+    sources:
+      - path: LedgerBar
+        excludes:
+          - "App/Info.plist"
+          - "App/LedgerBar.entitlements"
+    dependencies:
+      - package: LedgerBarPackage
+        product: LedgerCore
+    configFiles:
+      Debug: Config/LocalSigning.xcconfig
+      Release: Config/LocalSigning.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ledgerbar.app
+        INFOPLIST_FILE: LedgerBar/App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: LedgerBar/App/LedgerBar.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_APP_SANDBOX: YES
+  LedgerBarTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: LedgerBarTests
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: Apple Development
+        DEVELOPMENT_TEAM: $(LEDGERBAR_DEVELOPMENT_TEAM)
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/LedgerBar.app/Contents/MacOS/LedgerBar"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: LedgerBar
+      - package: LedgerBarPackage
+        product: LedgerCore
+  LedgerBarUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: LedgerBarUITests
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: Apple Development
+        DEVELOPMENT_TEAM: $(LEDGERBAR_DEVELOPMENT_TEAM)
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: LedgerBar
+        UITargetAppPath: "$(BUILT_PRODUCTS_DIR)/LedgerBar.app"
+    dependencies:
+      - target: LedgerBar
+schemes:
+  LedgerBar:
+    build:
+      targets:
+        LedgerBar: all
+    test:
+      environmentVariables:
+        - variable: LEDGERBAR_DB_PATH
+          value: LedgerBar/NativeGateTests.sqlite
+          isEnabled: true
+      targets:
+        - LedgerBarTests
+        - LedgerBarUITests
