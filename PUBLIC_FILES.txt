@@ -8,6 +8,7 @@ LedgerBar/App/LedgerBar.entitlements
 LedgerBar/App/LedgerBarApp.swift
 LedgerBar/App/SyncCoordinator.swift
 LedgerBar/UI/BudgetGridView.swift
+LedgerBar/UI/CategorySheets.swift
 LedgerBar/UI/MainWindowView.swift
 LedgerBar/UI/MenuBarSummaryView.swift
 LedgerBar/UI/MoneyFormatting.swift
@@ -61,6 +62,7 @@ Sources/LedgerCore/Support/MoneyParser.swift
 Sources/LedgerCore/Support/SourceOrderKey.swift
 THIRD_PARTY_NOTICES.md
 Tests/LedgerCoreTests/CalendarOrderingTests.swift
+Tests/LedgerCoreTests/CategoryManagementTests.swift
 Tests/LedgerCoreTests/CounterOverflowTests.swift
 Tests/LedgerCoreTests/EndToEndFlowTests.swift
 Tests/LedgerCoreTests/GoldenScenarioTests.swift
@@ -90,4 +92,5 @@ Tools/check-public-files.sh
 Tools/install-local-app.sh
 Tools/run-native-gates.sh
 Tools/xcodegen-version.txt
+docs/DEVELOPMENT.md
 project.yml

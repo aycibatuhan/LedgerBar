@@ -1,209 +1,132 @@
 # LedgerBar
 
-A local-first, zero-based envelope budgeting app for macOS (native SwiftUI,
-menu bar + full window) that imports read-only bank data from SimpleFIN
-Bridge and stores everything in one local SQLite file. No telemetry, no
-LedgerBar server. `SPEC.md` is the governing specification.
+A local-first, zero-based envelope budgeting app for macOS. Native SwiftUI,
+lives in your menu bar, stores everything in one local SQLite file, and can
+import read-only bank data through SimpleFIN Bridge. No telemetry, no
+LedgerBar server, no cloud.
 
-## Layout
+<!-- Screenshot slot: capture from a synthetic-data smoke run only (see
+     docs/DEVELOPMENT.md "Disposable smoke test"), save as
+     docs/images/budget-grid.png, add the path to PUBLIC_FILES.txt, then
+     uncomment:
+<p align="center">
+  <img src="docs/images/budget-grid.png" width="760"
+       alt="LedgerBar budget grid with the menu-bar summary popover">
+</p>
+-->
 
-- `Sources/LedgerCore` — headless core: deterministic replay engine
-  (§3), conservation oracle (§3.7), GRDB persistence, the single
-  `BudgetMutationService` actor (§6.4), SimpleFIN client/decoder/synchronizer
-  (§4), Keychain credential store (§4.6).
-- `Tests/LedgerCoreTests` — Swift Testing suite: §3.7 micro-goldens 1–17,
-  the §3.10 three-month golden scenario, recurrence/overspending/refund
-  rules, import classification, protocol/security boundaries, persistence,
-  reconciliation.
-- `LedgerBar/` — app-only SwiftUI code (menu bar summary, onboarding,
-  budget grid, register, Review Queue, staged-row resolution, reconciliation,
-  SimpleFIN settings, backup). Consumed by both the SwiftPM executable target
-  and the XcodeGen app bundle.
-- `project.yml` — XcodeGen source for the sandboxed/signed `.app` bundle
-  (§6.2). Requires `xcodegen` exactly `2.46.0` (see
-  `Tools/xcodegen-version.txt`) and full Xcode.
+## Features
 
-## Build and run
+- **Envelope budgeting** — a monthly grid of Budgeted / Activity / Available
+  per category with inline assignment and an atomic **Move Money** flow.
+  Ready to Assign turns red the moment you over-assign.
+- **Menu-bar summary** — the current month's Ready to Assign, assigned
+  total, and activity at a glance, with needs-attention counts and one-click
+  **Sync Now**.
+- **Bank import via SimpleFIN** *(optional)* — connect once with a
+  single-use SimpleFIN Bridge Setup Token. Posted transactions and balances
+  sync on demand, and automatically at most once a day (re-checked on
+  launch, activation, and wake). The app is fully usable with manual entry
+  alone.
+- **Transaction register** — manual entry, search, and workflow filters
+  (Needs Category, Staged, Unapproved); approve/clear flags; guarded edit
+  and delete. Imported amounts stay provider-owned, and imported rows are
+  voided rather than silently merged or destroyed.
+- **Review Queue** — every sync conflict and balance discrepancy becomes an
+  explicit decision (keep local, accept remote, void, or audited
+  adjustment). Nothing is auto-resolved behind your back.
+- **Credit cards, done strictly** — negative-debt convention, an automatic
+  payment category per card, and per-category credit-overspending tracking.
+- **Transfers** — manual transfers between accounts (on- and off-budget),
+  plus explicit pairing of two imported rows as one transfer.
+- **Auto-categorization by exact payee** — categorize a payee once and
+  sign-compatible future imports follow it.
+- **Reconciliation** — statement-based reconcile with one deterministic
+  adjustment, and undo for the most recent reconciliation.
+- **Verified backups** — a consistent SQLite snapshot, integrity-checked
+  before it is written to the destination you choose.
 
-With Command Line Tools only (development build, bare executable):
+## Requirements
 
-```bash
-swift test               # headless correctness gate — must be green
-swift build              # builds LedgerCore + the LedgerBar executable
-swift run LedgerBar      # runs the real SwiftUI app (menu bar + window)
-```
+- macOS 15 or later.
+- To build: a Swift 6 toolchain. Xcode Command Line Tools are enough for
+  the executable and the local `.app`; full Xcode and XcodeGen 2.46.0 are
+  needed only for the signed, sandboxed bundle (see
+  [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)).
+- For bank sync (optional): a Setup Token from your
+  [SimpleFIN Bridge](https://bridge.simplefin.org) account. Access is
+  read-only; LedgerBar can never move money.
 
-Relative `LEDGERBAR_DB_PATH` values are resolved inside the app's Application
-Support directory. Absolute paths are restricted to explicit development
-smoke tests and require `LEDGERBAR_ALLOW_ABSOLUTE_DB_PATH=1`; they are never
-needed for normal use.
+## Install
 
-### Build a local `.app` with Command Line Tools only
-
-When full Xcode is unavailable, package the same native SwiftUI executable as
-an ad-hoc signed app bundle:
-
-```bash
-cd /path/to/LedgerBar
-./Tools/build-local-app.sh
-open .build/Local/LedgerBar.app
-```
-
-For a disposable first-run smoke test, use a scratch database so the launch
-cannot touch the normal Application Support store:
-
-```bash
-LEDGERBAR_ALLOW_ABSOLUTE_DB_PATH=1 \
-LEDGERBAR_DB_PATH=/tmp/ledgerbar-smoke.sqlite \
-  .build/Local/LedgerBar.app/Contents/MacOS/LedgerBar
-```
-
-The bundle produced by this command is the canonical menu-bar-only local
-build required by `SPEC.md`. It is a real native macOS app, not
-Electron or a web wrapper. Because it uses `LSUIElement`, it appears as a
-menu-bar app rather than a Dock icon.
-
-### Install the Dock-visible app in Applications
-
-To install a personal-use copy that appears in both the Dock and the menu bar:
+No prebuilt binaries are distributed — you build LedgerBar from this
+repository. For an app that reads your bank data, that is deliberate: every
+line that touches your money is in this repo for you to read first.
 
 ```bash
-cd /path/to/LedgerBar
+git clone <repository-url> LedgerBar
+cd LedgerBar
 ./Tools/install-local-app.sh
 open /Applications/LedgerBar.app
 ```
 
-The installer rebuilds the canonical bundle, copies it to
-`/Applications/LedgerBar.app`, changes only the installed copy to be
-Dock-visible, and re-signs it. The installed copy retains the menu-bar
-popover and its **Open LedgerBar**, Settings, and Quit controls. When the app
-is running, right-click its Dock icon and choose **Options → Keep in Dock** if
-you want it pinned after quitting.
-
 If `/Applications` is not writable, install into your user Applications
-folder instead:
+folder instead: `LEDGERBAR_INSTALL_DIR="$HOME/Applications"
+./Tools/install-local-app.sh`. For a menu-bar-only bundle without the Dock
+icon, use `./Tools/build-local-app.sh` and launch
+`.build/Local/LedgerBar.app` directly.
 
-```bash
-LEDGERBAR_INSTALL_DIR="$HOME/Applications" ./Tools/install-local-app.sh
-open "$HOME/Applications/LedgerBar.app"
-```
+First launch runs onboarding: pick the budget currency, time zone, and
+first budget month. All three are fixed once the budget is created.
 
-Both the canonical and installed variants retain the menu-bar popover. Open
-it, use **Open LedgerBar** for the full budgeting window, and use the gear
-control for **Settings** (including SimpleFIN and Backup) or the power control
-to quit. The main window's **Review Queue** is the user-facing surface for
-persisted sync decisions.
-When a Setup Token targets a non-official beta/test endpoint, LedgerBar first
-rejects it locally and shows the exact host for confirmation. Choose
-**Trust Host & Retry** only when the token came from that provider environment;
-the exact lowercase host/port is then stored in this budget's trusted-host
-list and the in-memory Setup Token is retried. The Setup Token is never written
-to SQLite, UserDefaults, logs, or the repository. HTTPS, path, redirect, and
-credential-forwarding checks remain enforced.
-Ad-hoc signing is sufficient for manual budgeting and launch testing, but it
-does **not** pass the development-signed Keychain access-group gate. The app
-preflights the actual Keychain store before sending a single-use SimpleFIN
-Setup Token, so an unavailable Keychain fails closed before the token is
-claimed; do not bypass that check or paste a production token into another
-host. SimpleFIN credential storage must be validated with the signed Xcode
-host described below; if full Xcode or a development team is unavailable, that
-gate remains blocked rather than silently falling back to a file credential
-store.
+One honest limitation of the self-built app: it is ad-hoc signed, which is
+fully sufficient for budgeting, but the SimpleFIN credential requires the
+app's Keychain access group, which ad-hoc signing cannot provide. LedgerBar
+preflights the Keychain and fails closed **before** your single-use Setup
+Token would be spent. Live bank sync therefore needs the development-signed
+build described in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-### SimpleFIN capture gate (§4.2)
+## Using the app
 
-Before the deployed-response decoder is frozen, run the one-command capture
-against your own account (SimpleFIN must be connected in the app first):
+The menu-bar popover shows the month at a glance; **Open LedgerBar** opens
+the full window with the budget grid, account registers, and the Review
+Queue. The gear opens Settings (SimpleFIN, Backup).
 
-```bash
-swift run ledgerbar-capture            # → ./simplefin-shape-fixture.json
-```
+When connecting SimpleFIN, a Setup Token that targets anything other than
+the official host is rejected locally first; the exact host is shown and
+sync proceeds only if you explicitly choose **Trust Host & Retry**. Setup
+Tokens are never written to disk, and the Access URL credential lives only
+in the Keychain.
 
-The standalone SwiftPM capture command is intentionally unsigned, so it
-cannot query the signed app Keychain group. It therefore offers one
-terminal-echo-disabled Access URL prompt and keeps the value in memory only
-for the request. The signed app itself uses only its designated Keychain
-group. The tool accepts no credential material in argv or ordinary
-environment variables, and a non-interactive invocation remains blocked. The
-raw body is written 0600 and deleted after the sanitized fixture is emitted
-(best-effort deletion; not cryptographic erasure). The fixture preserves the
-response shape (keys, string-vs-number types, decimal formatting,
-`errors`/`errlist`) with all IDs pseudonymized and names/descriptions/amounts
-redacted.
+## Status and scope
 
-### Native host and signed Keychain gate (§6.2)
+LedgerBar is a personal project. v1 is deliberately narrow: correctness of
+the ledger and budget engine over feature breadth. The engine is gated by a
+deterministic replay model and a conservation oracle exercised by the test
+suite before any UI work.
 
-The repository includes a fail-closed runner for the complete native gate:
+Current v1 boundaries you should know before moving your budget here:
 
-```bash
-# Full Xcode must be selected; XcodeGen must be exactly 2.46.0.
-# The team identifier is non-secret and is supplied only in the invoking shell.
-# This command runs the native and signed Keychain gates, then reports PASS
-# with the protected live capture explicitly marked SKIPPED unless opted in.
-LEDGERBAR_DEVELOPMENT_TEAM=ABCDEFGHIJ \
-LEDGERBAR_PROVISIONING_PROFILE_SPECIFIER='LedgerBar Mac Development' \
-./Tools/run-native-gates.sh
-```
+- One budget, one currency; currency, time zone, and first month are fixed
+  at creation.
+- One SimpleFIN connection (it may expose many institutions and accounts).
+- Only the current month can be assigned or reallocated; past and future
+  months are read-only (past months can be closed and reopened).
+- The app ships with a starter set of category groups and categories, plus
+  an automatic payment category per credit card. Categories and groups can
+  be added and renamed from the budget grid, and categories can be hidden
+  (archived — history is kept, never deleted) and unhidden via the row's
+  context menu. Reordering categories and groups is not yet supported.
+- Restore is manual (documented below); there is no restore UI.
+- Not yet: CSV/OFX import or export, reports and charts, goals, scheduled
+  or recurring transactions, split transactions, multi-currency, cloud
+  sync, iOS.
+- Pending bank transactions are not imported; SimpleFIN history is roughly
+  90 days (a provider constraint).
+- Credit cards cannot go positive in v1 — overpayments and cash advances
+  are rejected or staged for review.
 
-The complete runner requires an explicit owner opt-in for the live capture
-request. Run it from an interactive terminal after connecting the owner's
-account in the app:
-
-```bash
-LEDGERBAR_DEVELOPMENT_TEAM=ABCDEFGHIJ \
-LEDGERBAR_PROVISIONING_PROFILE_SPECIFIER='LedgerBar Mac Development' \
-LEDGERBAR_RUN_LIVE_SIMPLEFIN=1 \
-./Tools/run-native-gates.sh
-```
-
-`LEDGERBAR_RUN_LIVE_SIMPLEFIN` is only a gate switch; no credential is passed
-through the environment. The signed app uses its Keychain boundary, while the
-standalone capture tool opens its protected echo-disabled prompt and retains only the sanitized
-fixture. When the live opt-in is absent, the runner exits **PASS** after the
-native/signed gates and records `simplefin_live_fixture=SKIPPED` in the evidence
-manifest. When the opt-in is present, the protected capture must complete and
-its sanitized fixture path is recorded instead.
-
-The profile specifier belongs to the `LedgerBar` app target only. The hosted
-unit/UI test bundles use automatic Apple Development signing with the supplied
-team, so they are not incorrectly forced to use the app-only profile.
-`Config/LocalSigning.xcconfig` maps both `LEDGERBAR_DEVELOPMENT_TEAM` and
-`LEDGERBAR_PROVISIONING_PROFILE_SPECIFIER` into that app target; the runner
-exports both values before invoking `xcodebuild`.
-The runner intentionally does not pass `-xcconfig Config/LocalSigning.xcconfig`
-globally to `xcodebuild test`: doing so would apply the app-only profile to the
-distinct test bundle identifiers. The target-scoped `configFiles` binding is
-the required equivalent for the development-signed host gate.
-
-`Tools/run-native-gates.sh` runs `swift test`, verifies the pinned XcodeGen
-version, an `Apple Development` identity, and the selected Mac Development
-provisioning profile, generates `LedgerBar.xcodeproj`,
-then runs the unsigned compile, ad-hoc signing spike, and development-signed
-host/UI/Keychain test gates. The protected SimpleFIN capture runs only when
-explicitly enabled; otherwise the native/signed result is **PASS** with the
-live fixture marked **SKIPPED**. It exits as **BLOCKED** if full Xcode, XcodeGen,
-the team identifier, the signing identity, or the provisioning profile is
-unavailable; an unsigned or ad-hoc build is never reported as passing the
-Keychain gate.
-The generated native targets explicitly host `LedgerBarTests` inside the app
-and associate `LedgerBarUITests` with the app target. The UI test still requires
-a real macOS display and Accessibility permissions.
-
-For manual inspection only, the underlying generation/build command is:
-
-```bash
-xcodegen --version       # must be exactly 2.46.0
-xcodegen generate
-xcodebuild -project LedgerBar.xcodeproj -scheme LedgerBar \
-  -destination 'platform=macOS' \
-  -derivedDataPath .build/DerivedDataUnsigned CODE_SIGNING_ALLOWED=NO build
-```
-
-`Config/LocalSigning.xcconfig` reads the non-secret team and app-profile
-variables from the shell and is attached only to the app target. Never place
-credentials or provider material in that file.
-
-## Backup and manual restore (v1)
+## Backup and manual restore
 
 Settings → Backup creates a consistent snapshot via the GRDB backup API,
 verifies it with `PRAGMA integrity_check`, and only then copies it to your
@@ -213,8 +136,7 @@ destination (FileVault, access controls).
 Restore is manual in v1. A development-signed sandboxed app uses
 `~/Library/Containers/com.ledgerbar.app/Data/Library/Application Support/LedgerBar/`;
 the unsandboxed ad-hoc/manual bundle uses
-`~/Library/Application Support/LedgerBar/`. Ad-hoc is not a SimpleFIN
-credential-storage or live-capture configuration.
+`~/Library/Application Support/LedgerBar/`.
 
 1. Quit LedgerBar.
 2. In the appropriate LedgerBar Application Support directory above, remove
@@ -233,19 +155,43 @@ credential-storage or live-capture configuration.
   approved host and exact path allowlist; errors and logs are redacted.
 - The local database is unencrypted and relies on FileVault at rest.
 
+## Building from source
+
+With Command Line Tools only:
+
+```bash
+swift test               # headless correctness gate — must be green
+swift build              # builds LedgerCore + the LedgerBar executable
+swift run LedgerBar      # runs the real SwiftUI app (menu bar + window)
+```
+
+`SPEC.md` is the governing specification. Repository layout, database
+paths, the SimpleFIN capture gate, the signed native gates, and the
+publication workflow are documented in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+## Contributing and support
+
+Bug reports and questions are welcome as issues. The v1 scope above is
+intentional, and the engine is gated by a strict correctness suite — if you
+want to propose a change, please open an issue to discuss it before
+writing code.
+
 ## License
 
-LedgerBar is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+LedgerBar is licensed under the Apache License, Version 2.0. See
+[LICENSE](LICENSE).
 
 LedgerBar's third-party dependencies remain under their respective upstream
 licenses. Their exact versions, source revisions, and license texts are
 recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), with package
 resolution recorded in `Package.swift` and `Package.resolved`.
 
-## Public source allowlist
+## Public source transparency
 
-`PUBLIC_FILES.txt` is the explicit publication allowlist. Run
-`./Tools/check-public-files.sh` before staging; it verifies that every listed
-file exists and that no generated artifact, local database, credential, or
-private path is included. Never use `git add .` for publication. Stage only
-the paths listed in `PUBLIC_FILES.txt` after the check passes.
+This repository is published through an explicit allowlist:
+`PUBLIC_FILES.txt` names every published file, and
+`Tools/check-public-files.sh` verifies — fail-closed — that nothing
+generated, private, or credential-bearing is included in the tree or in
+reachable history. The maintainer workflow is described in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).

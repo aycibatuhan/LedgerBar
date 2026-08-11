@@ -9,6 +9,10 @@ struct BudgetGridView: View {
     @Environment(AppModel.self) private var model
     @State private var viewedMonth: BudgetMonth?
     @State private var showMoveMoney = false
+    @State private var showAddCategory = false
+    @State private var showAddGroup = false
+    @State private var showHidden = false
+    @State private var renameTarget: CategoryRenameTarget?
 
     private var current: BudgetMonth? { model.currentMonth }
     private var month: BudgetMonth? { viewedMonth ?? current }
@@ -41,6 +45,15 @@ struct BudgetGridView: View {
         }
         .sheet(isPresented: $showMoveMoney) {
             MoveMoneySheet(month: month)
+        }
+        .sheet(isPresented: $showAddCategory) {
+            AddCategorySheet()
+        }
+        .sheet(isPresented: $showAddGroup) {
+            AddCategoryGroupSheet()
+        }
+        .sheet(item: $renameTarget) { target in
+            RenameCategorySheet(target: target)
         }
     }
 
@@ -89,6 +102,17 @@ struct BudgetGridView: View {
                     Button("Move Money…") { showMoveMoney = true }
                         .help("Atomically reallocate between categories or Ready to Assign (§3.3 moveMoney). Direct assignment in the grid is setBudgeted and may over-assign.")
                 }
+                Menu {
+                    Button("Add Category…") { showAddCategory = true }
+                    Button("Add Group…") { showAddGroup = true }
+                    Divider()
+                    Toggle("Show Hidden Categories", isOn: $showHidden)
+                } label: {
+                    Label("Categories", systemImage: "plus")
+                }
+                .fixedSize()
+                .help("Add categories or groups, or show hidden (archived) categories. Hiding never deletes history; right-click a category row to rename or hide it.")
+                .accessibilityLabel("Category management")
                 if isPast {
                     if isClosed {
                         Button("Reopen Month") {
@@ -169,21 +193,48 @@ struct BudgetGridView: View {
             columnHeadings
             ForEach(groups, id: \.id) { group in
                 let rows = categories(in: group, snapshot: snapshot)
-                if !rows.isEmpty {
-                    Section(group.name) {
-                        ForEach(rows, id: \.id) { category in
-                            CategoryGridRow(
-                                category: category,
-                                monthSnapshot: monthSnapshot,
-                                currency: snapshot.budget.currency,
-                                editable: editable && category.systemKind == nil
-                            )
-                        }
+                Section {
+                    ForEach(rows, id: \.id) { category in
+                        CategoryGridRow(
+                            category: category,
+                            monthSnapshot: monthSnapshot,
+                            currency: snapshot.budget.currency,
+                            editable: editable && category.systemKind == nil && !category.hidden
+                        )
+                        .contextMenu { categoryMenu(for: category) }
                     }
+                } header: {
+                    Text(group.name)
+                        .contextMenu {
+                            if group.id != snapshot.creditCardPaymentsGroupID {
+                                Button("Rename Group…") { renameTarget = .group(group) }
+                            }
+                        }
                 }
             }
         }
         .listStyle(.inset)
+    }
+
+    /// Hide/unhide/rename apply to user spending categories only: system rows
+    /// are immutable and a payment category's name and lifecycle follow its
+    /// credit card account.
+    @ViewBuilder
+    private func categoryMenu(for category: CategoryRow) -> some View {
+        if category.systemKind == nil && category.kind != .ccPayment {
+            if category.hidden {
+                Button("Unhide") {
+                    let id = category.id
+                    Task { await model.perform { try $0.unhideCategory(id) } }
+                }
+            } else {
+                Button("Rename…") { renameTarget = .category(category) }
+                Button("Hide") {
+                    let id = category.id
+                    Task { await model.perform { try $0.hideCategory(id) } }
+                }
+            }
+        }
     }
 
     private var columnHeadings: some View {
@@ -199,8 +250,10 @@ struct BudgetGridView: View {
 
     private func categories(in group: CategoryGroupRow, snapshot: BudgetWorkspaceSnapshot) -> [CategoryRow] {
         snapshot.categories
-            .filter { $0.groupID == group.id && !$0.hidden && $0.kind != .inflow }
-            .sorted { ($0.sortOrder, $0.name) < ($1.sortOrder, $1.name) }
+            .filter { $0.groupID == group.id && (showHidden || !$0.hidden) && $0.kind != .inflow }
+            .sorted {
+                ($0.hidden ? 1 : 0, $0.sortOrder, $0.name) < ($1.hidden ? 1 : 0, $1.sortOrder, $1.name)
+            }
     }
 }
 
@@ -228,6 +281,14 @@ private struct CategoryGridRow: View {
         HStack {
             HStack(spacing: 6) {
                 Text(category.name)
+                    .foregroundStyle(category.hidden ? Color.secondary : Color.primary)
+                if category.hidden {
+                    Image(systemName: "eye.slash")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("Hidden (archived). History is kept; right-click to unhide.")
+                        .accessibilityLabel("Hidden category")
+                }
                 if v.creditDebt > 0 {
                     Image(systemName: "creditcard.trianglebadge.exclamationmark")
                         .foregroundStyle(.orange)

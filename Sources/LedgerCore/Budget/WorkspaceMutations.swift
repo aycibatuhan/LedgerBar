@@ -157,11 +157,38 @@ extension BudgetWorkspace {
 
     // MARK: - Category management
 
+    /// Trimmed, non-empty user-entered name for categories and groups.
+    private func validatedEntityName(_ raw: String) throws -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw MutationError.nameEmpty }
+        return trimmed
+    }
+
+    /// Uniqueness is case-insensitive against visible rows only: hide is an
+    /// archive, and an archived name must stay reusable (unhide re-checks).
+    private func hasVisibleGroupNamed(_ name: String, excluding excluded: CategoryGroupID? = nil) -> Bool {
+        categoryGroups.values.contains {
+            $0.id != excluded && !$0.hidden
+                && $0.name.compare(name, options: .caseInsensitive) == .orderedSame
+        }
+    }
+
+    private func hasVisibleCategoryNamed(
+        _ name: String, inGroup groupID: CategoryGroupID, excluding excluded: CategoryID? = nil
+    ) -> Bool {
+        categories.values.contains {
+            $0.id != excluded && !$0.hidden && $0.groupID == groupID
+                && $0.name.compare(name, options: .caseInsensitive) == .orderedSame
+        }
+    }
+
     @discardableResult
     public mutating func addCategoryGroup(name: String) throws -> CategoryGroupID {
+        let trimmed = try validatedEntityName(name)
+        guard !hasVisibleGroupNamed(trimmed) else { throw MutationError.duplicateName }
         var copy = self
         let group = CategoryGroupRow(
-            budgetID: budget.id, name: name,
+            budgetID: budget.id, name: trimmed,
             sortOrder: categoryGroups.values.map(\.sortOrder).max().map { $0 + 1 } ?? 0
         )
         copy.setCategoryGroup(group)
@@ -174,9 +201,13 @@ extension BudgetWorkspace {
     public mutating func addCategory(groupID: CategoryGroupID, name: String) throws -> CategoryID {
         guard categoryGroups[groupID] != nil else { throw MutationError.entityNotFound }
         guard groupID != creditCardPaymentsGroupID else { throw MutationError.categoryNotAllowed }
+        let trimmed = try validatedEntityName(name)
+        guard !hasVisibleCategoryNamed(trimmed, inGroup: groupID) else {
+            throw MutationError.duplicateName
+        }
         var copy = self
         let category = CategoryRow(
-            budgetID: budget.id, groupID: groupID, name: name,
+            budgetID: budget.id, groupID: groupID, name: trimmed,
             sortOrder: categories.values.filter { $0.groupID == groupID }.count,
             kind: .spending // user-created categories are spending-only in v1
         )
@@ -184,6 +215,38 @@ extension BudgetWorkspace {
         try copy.bumpRevision()
         self = copy
         return category.id
+    }
+
+    /// Renames a user spending category. System categories are immutable, and
+    /// a card payment category's name is derived from its card account.
+    public mutating func renameCategory(_ id: CategoryID, to name: String) throws {
+        guard var category = categories[id] else { throw MutationError.entityNotFound }
+        guard category.systemKind == nil, category.kind != .ccPayment else {
+            throw MutationError.systemEntityImmutable
+        }
+        let trimmed = try validatedEntityName(name)
+        guard !hasVisibleCategoryNamed(trimmed, inGroup: category.groupID, excluding: id) else {
+            throw MutationError.duplicateName
+        }
+        var copy = self
+        category.name = trimmed
+        copy.setCategory(category)
+        try copy.bumpRevision()
+        self = copy
+    }
+
+    /// Renames a user category group; the Credit Card Payments group is
+    /// system-managed.
+    public mutating func renameCategoryGroup(_ id: CategoryGroupID, to name: String) throws {
+        guard var group = categoryGroups[id] else { throw MutationError.entityNotFound }
+        guard id != creditCardPaymentsGroupID else { throw MutationError.systemEntityImmutable }
+        let trimmed = try validatedEntityName(name)
+        guard !hasVisibleGroupNamed(trimmed, excluding: id) else { throw MutationError.duplicateName }
+        var copy = self
+        group.name = trimmed
+        copy.setCategoryGroup(group)
+        try copy.bumpRevision()
+        self = copy
     }
 
     /// Hide/archive (physical deletion is never used). A category with
@@ -197,6 +260,23 @@ extension BudgetWorkspace {
         guard available <= 0 else { throw MutationError.categoryHasAvailable }
         var copy = self
         category.hidden = true
+        copy.setCategory(category)
+        try copy.bumpRevision()
+        self = copy
+    }
+
+    /// Un-archives a hidden category. Because hide keeps the name reusable,
+    /// unhide is refused while a visible sibling now holds the same name.
+    /// Unhiding an already-visible category is a no-op.
+    public mutating func unhideCategory(_ id: CategoryID) throws {
+        guard var category = categories[id] else { throw MutationError.entityNotFound }
+        guard category.systemKind == nil else { throw MutationError.systemEntityImmutable }
+        guard category.hidden else { return }
+        guard !hasVisibleCategoryNamed(category.name, inGroup: category.groupID, excluding: id) else {
+            throw MutationError.duplicateName
+        }
+        var copy = self
+        category.hidden = false
         copy.setCategory(category)
         try copy.bumpRevision()
         self = copy

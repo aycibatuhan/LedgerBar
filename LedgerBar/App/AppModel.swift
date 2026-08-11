@@ -427,6 +427,8 @@ final class AppModel {
         case .budgetMismatch, .entityNotFound, .duplicateEntity: return "The referenced item was not found."
         case .currencyMismatch: return "Currencies do not match."
         case .systemEntityImmutable: return "System items cannot be changed."
+        case .nameEmpty: return "Enter a name."
+        case .duplicateName: return "That name is already in use."
         case .monthNotClosed: return "That month is not closed."
         case .monthAlreadyClosed: return "That month is already closed."
         case .accountHasActivity: return "Close is blocked while the account has a balance or unresolved rows."

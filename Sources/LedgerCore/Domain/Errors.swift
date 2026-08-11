@@ -77,6 +77,8 @@ public enum MutationError: Error, Equatable, Sendable {
     case duplicateEntity
     case entityNotFound
     case systemEntityImmutable
+    case nameEmpty                           // trimmed user-entered name is empty
+    case duplicateName                       // case-insensitive clash with a visible sibling
     case monthNotClosed
     case monthAlreadyClosed
     case accountHasActivity                  // close-account guard
