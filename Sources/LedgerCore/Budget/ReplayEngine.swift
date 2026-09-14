@@ -526,7 +526,10 @@ public enum ReplayEngine {
                 }
                 return PostingDecision(postingState: .posted)
             }
-            guard row.amountMilliunits >= 0, category == ctx.rtaCategoryID else {
+            // Cash-like opening of either sign: a negative opening is an
+            // overdraft that reduces RTA (signed activity, like a negative
+            // reconciliation adjustment).
+            guard category == ctx.rtaCategoryID else {
                 throw IntegrityError(code: .invalidRowState, month: month)
             }
             return PostingDecision(postingState: .posted)

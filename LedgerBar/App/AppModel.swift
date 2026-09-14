@@ -347,6 +347,10 @@ final class AppModel {
             return Self.protocolMessage(proto)
         case SimpleFINSignNormalizationError.invertedCashLikeAccount:
             return "Checking, savings, and cash accounts must use the normal SimpleFIN sign convention."
+        case SimpleFINKeychainError.missingAccessGroup:
+            return "This LedgerBar build is ad-hoc signed and has no Keychain access group, so it cannot store the SimpleFIN credential. Live sync needs the development-signed Xcode build (see docs/DEVELOPMENT.md)."
+        case let SimpleFINKeychainError.unexpectedStatus(status):
+            return "The SimpleFIN credential could not be accessed in the Keychain (OSStatus \(status))."
         case is SimpleFINKeychainError:
             return "The SimpleFIN credential could not be accessed in the Keychain."
         case let lifecycle as SimpleFINCredentialLifecycleError:
@@ -406,7 +410,6 @@ final class AppModel {
         case .categoryRequired: return "Choose a category."
         case .categoryNotAllowed: return "That category is not allowed for this transaction."
         case .cardBalanceWouldBecomePositive: return "This would make the credit card balance positive, which v1 does not support."
-        case .negativeCashOpeningBalance: return "A negative opening balance on an on-budget cash account is not supported. Resolve the overdraft or keep the account off-budget."
         case .positiveCardOpeningBalance: return "A positive credit-card balance is not supported in v1."
         case .refundNotPositive: return "A refund must have a positive amount."
         case .refundOriginInvalid: return "The refund origin is not valid for this row."
@@ -431,7 +434,8 @@ final class AppModel {
         case .duplicateName: return "That name is already in use."
         case .monthNotClosed: return "That month is not closed."
         case .monthAlreadyClosed: return "That month is already closed."
-        case .accountHasActivity: return "Close is blocked while the account has a balance or unresolved rows."
+        case .accountHasActivity: return "Close is blocked while the account has a balance or unresolved rows. Use “Void History and Close” for a duplicate or mistaken account."
+        case .accountHasTransferPairs: return "Unpair this account's transfers before voiding its history; the other side of each transfer belongs to another account."
         case .categoryHasAvailable: return "Move this category's available money elsewhere before hiding it."
         case .arithmeticOverflow: return "The amount is too large to process."
         }

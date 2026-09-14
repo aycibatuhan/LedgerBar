@@ -15,6 +15,10 @@ struct MainWindowView: View {
     @Environment(AppModel.self) private var model
     @State private var selection: SidebarItem? = .budget
     @State private var showAddAccount = false
+    @State private var renameAccountTarget: AccountRow?
+    @State private var closeAccountTarget: AccountRow?
+    @State private var voidCloseTarget: AccountRow?
+    @AppStorage("ledgerbar.showClosedAccounts") private var showClosedAccounts = false
 
     var body: some View {
         @Bindable var model = model
@@ -77,6 +81,7 @@ struct MainWindowView: View {
                     ForEach(sortedAccounts, id: \.id) { account in
                         accountRow(account)
                             .tag(SidebarItem.account(account.id))
+                            .contextMenu { accountMenu(for: account) }
                     }
                 }
             }
@@ -90,6 +95,15 @@ struct MainWindowView: View {
                     }
                     .accessibilityLabel("Add Account")
                     .accessibilityIdentifier("ledgerbar.add-account")
+                }
+                ToolbarItem {
+                    Menu {
+                        Toggle("Show Closed Accounts", isOn: $showClosedAccounts)
+                    } label: {
+                        Label("Account Options", systemImage: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("Account Options")
+                    .accessibilityIdentifier("ledgerbar.account-options")
                 }
             }
         } detail: {
@@ -107,11 +121,118 @@ struct MainWindowView: View {
         .sheet(isPresented: $showAddAccount) {
             AddAccountSheet()
         }
+        .sheet(item: $renameAccountTarget) { account in
+            RenameAccountSheet(account: account)
+        }
+        .confirmationDialog(
+            "Close \(closeAccountTarget?.name ?? "this account")?",
+            isPresented: closeDialogBinding,
+            titleVisibility: .visible,
+            presenting: closeAccountTarget
+        ) { account in
+            Button("Close Account") { closeAccount(account) }
+            Button("Void History and Close…", role: .destructive) { voidCloseTarget = account }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Close keeps every transaction and only stops the account from participating in the budget; it works when the register balance is zero and nothing is staged or waiting for a category. Void History and Close is for a duplicate or mistaken account: it voids all of its transactions first.")
+        }
+        .confirmationDialog(
+            "Void all history of \(voidCloseTarget?.name ?? "this account") and close it?",
+            isPresented: voidCloseDialogBinding,
+            titleVisibility: .visible,
+            presenting: voidCloseTarget
+        ) { account in
+            Button("Void \(liveRowCount(account)) Transactions and Close", role: .destructive) {
+                voidHistoryAndClose(account)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { account in
+            Text(voidCloseMessage(account))
+        }
+    }
+
+    private var closeDialogBinding: Binding<Bool> {
+        Binding(
+            get: { closeAccountTarget != nil },
+            set: { if !$0 { closeAccountTarget = nil } }
+        )
+    }
+
+    private var voidCloseDialogBinding: Binding<Bool> {
+        Binding(
+            get: { voidCloseTarget != nil },
+            set: { if !$0 { voidCloseTarget = nil } }
+        )
+    }
+
+    private func liveRowCount(_ account: AccountRow) -> Int {
+        (model.snapshot?.transactions ?? []).filter {
+            $0.accountID == account.id && $0.postingState != .voided
+        }.count
+    }
+
+    private func voidCloseMessage(_ account: AccountRow) -> String {
+        let balance = model.projection?.registerBalances[account.id] ?? 0
+        let imported = (model.snapshot?.transactions ?? []).filter {
+            $0.accountID == account.id && $0.postingState != .voided && $0.sourceKind == .simplefin
+        }.count
+        return "Register balance \(MoneyFormatting.string(balance, currency: account.currency)). "
+            + "\(imported) imported transactions are voided and keep their import identity so a later sync cannot bring them back; "
+            + "the rest, including the opening balance, are removed. Money the account contributed to Ready to Assign disappears with it. "
+            + "Transfers must be unpaired first, and a closed month blocks this."
+    }
+
+    private func voidHistoryAndClose(_ account: AccountRow) {
+        let accountID = account.id
+        if model.simplefin?.links.contains(where: { $0.localAccountID == accountID && $0.status == .active }) == true {
+            model.actionError = "\(account.name) is still linked to an active SimpleFIN connection. Disconnect SimpleFIN in Settings before voiding this account's history."
+            return
+        }
+        let now = Int64(Date().timeIntervalSince1970.rounded())
+        Task {
+            let summary: AccountCloseSummary? = await model.perform { workspace in
+                try workspace.closeAccountVoidingHistory(accountID: accountID, nowEpoch: now)
+            }
+            if let summary {
+                if selection == .account(accountID) { selection = .allAccounts }
+                model.infoMessage = "\(account.name) is closed. \(summary.voidedImportedRows) imported transactions were voided and \(summary.removedLocalRows) local rows removed. Use Show Closed Accounts to see it."
+            }
+        }
     }
 
     private var sortedAccounts: [AccountRow] {
-        (model.snapshot?.accounts ?? []).sorted {
-            ($0.closed ? 1 : 0, $0.onBudget ? 0 : 1, $0.name) < ($1.closed ? 1 : 0, $1.onBudget ? 0 : 1, $1.name)
+        (model.snapshot?.accounts ?? [])
+            .filter { showClosedAccounts || !$0.closed }
+            .sorted {
+                ($0.closed ? 1 : 0, $0.onBudget ? 0 : 1, $0.name) < ($1.closed ? 1 : 0, $1.onBudget ? 0 : 1, $1.name)
+            }
+    }
+
+    /// Rename and close are the only account lifecycle actions: the ledger is
+    /// never deleted (§2.1), and close is guarded by the engine.
+    @ViewBuilder
+    private func accountMenu(for account: AccountRow) -> some View {
+        if account.closed {
+            Text("Closed account")
+        } else {
+            Button("Rename…") { renameAccountTarget = account }
+            Divider()
+            Button("Close Account…") { closeAccountTarget = account }
+        }
+    }
+
+    private func closeAccount(_ account: AccountRow) {
+        let accountID = account.id
+        let now = Int64(Date().timeIntervalSince1970.rounded())
+        Task {
+            let closed: Bool? = await model.perform { workspace in
+                try workspace.closeAccount(accountID: accountID, nowEpoch: now)
+                return true
+            }
+            if closed != nil {
+                if selection == .account(accountID) { selection = .allAccounts }
+                model.infoMessage = "\(account.name) is closed. Its history is kept; use Show Closed Accounts to see it."
+            }
         }
     }
 
@@ -179,7 +300,7 @@ struct AddAccountSheet: View {
                 Toggle("On budget", isOn: $onBudget)
                     .disabled(type == .other)
                 TextField("Opening balance", text: $openingText)
-                    .help("Positive cash opening goes to Ready to Assign. A credit card with existing debt uses a negative opening. This cannot be a positive card balance.")
+                    .help("A cash opening is a signed inflow to Ready to Assign: positive funds it, negative (an overdrawn account) reduces it. A credit card with existing debt uses a negative opening; a positive card balance is not allowed.")
             }
             .formStyle(.grouped)
             HStack {
@@ -221,6 +342,53 @@ struct AddAccountSheet: View {
             }
         } catch {
             model.actionError = model.friendlyMessage(error)
+        }
+    }
+}
+
+/// Renames an account. The engine trims the name, rejects duplicates among
+/// open accounts, and renames a credit card's payment category with it.
+struct RenameAccountSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let account: AccountRow
+
+    @State private var name: String
+
+    init(account: AccountRow) {
+        self.account = account
+        _name = State(initialValue: account.name)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Rename Account").font(.title3.bold())
+            Form {
+                TextField("Name", text: $name)
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Rename") { rename() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+
+    private func rename() {
+        let newName = name
+        let accountID = account.id
+        let now = Int64(Date().timeIntervalSince1970.rounded())
+        Task {
+            let renamed: Bool? = await model.perform { workspace in
+                try workspace.renameAccount(accountID, to: newName, nowEpoch: now)
+                return true
+            }
+            if renamed != nil { dismiss() }
         }
     }
 }

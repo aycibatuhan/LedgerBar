@@ -1,5 +1,12 @@
 import Foundation
 
+/// Result of `closeAccountVoidingHistory`: how many rows were soft-voided
+/// (imported, identity retained) versus physically removed (manual/system).
+public struct AccountCloseSummary: Sendable, Equatable {
+    public let voidedImportedRows: Int
+    public let removedLocalRows: Int
+}
+
 public enum MoveMoneyEndpoint: Sendable, Equatable {
     /// RTA is a sentinel endpoint, never an allocation row.
     case rta
@@ -31,9 +38,10 @@ extension BudgetWorkspace {
     // MARK: - Accounts (§2.2, §4.4 opening rules)
 
     /// Adds an account with its opening-balance transaction. Opening rules:
-    /// positive on-budget non-card → inflow to RTA; negative on-budget cash →
-    /// rejected; card negative → pre-existing debt, no category; card positive
-    /// → rejected (`positiveCardSnapshot` is a link pause in sync, a hard
+    /// on-budget cash-like → signed inflow to RTA (a negative opening is an
+    /// overdraft that reduces RTA, which §3.3 already permits to be negative);
+    /// card negative → pre-existing debt, no category; card positive →
+    /// rejected (`positiveCardSnapshot` is a link pause in sync, a hard
     /// rejection for local creation); off-budget → register-only either sign.
     @discardableResult
     public mutating func addAccount(
@@ -48,13 +56,8 @@ extension BudgetWorkspace {
         guard !(type == .other && onBudget) else { throw MutationError.categoryNotAllowed }
         let accountCurrency = currency ?? budget.currency
         let eligible = onBudget && accountCurrency == budget.currency
-        if eligible {
-            if type == .creditCard, openingBalance > 0 {
-                throw MutationError.positiveCardOpeningBalance
-            }
-            if type.isCashLike, openingBalance < 0 {
-                throw MutationError.negativeCashOpeningBalance
-            }
+        if eligible, type == .creditCard, openingBalance > 0 {
+            throw MutationError.positiveCardOpeningBalance
         }
         guard openingDate.budgetMonth >= budget.firstMonth else { throw MutationError.dateBeforeFirstMonth }
         guard openingDate.budgetMonth <= currentMonth else { throw MutationError.futureDatedTransaction }
@@ -73,7 +76,7 @@ extension BudgetWorkspace {
 
         if openingBalance != 0 {
             let seq = try copy.allocateSourceSequence()
-            let categoryID: CategoryID? = (eligible && type.isCashLike && openingBalance > 0) ? rtaCategoryID : nil
+            let categoryID: CategoryID? = (eligible && type.isCashLike) ? rtaCategoryID : nil
             let row = TransactionRow(
                 budgetID: budget.id,
                 accountID: account.id,
@@ -95,6 +98,106 @@ extension BudgetWorkspace {
         try copy.bumpRevision()
         self = copy
         return account.id
+    }
+
+    /// Renames an account. Names are trimmed, non-empty, and unique
+    /// (case-insensitive) among open accounts; closed accounts keep their
+    /// historical name out of the uniqueness check. A credit card's payment
+    /// category name is derived from the card, so it is renamed atomically.
+    public mutating func renameAccount(_ id: AccountID, to name: String, nowEpoch: Int64) throws {
+        guard var account = accounts[id] else { throw MutationError.accountNotFound }
+        guard !account.closed else { throw MutationError.accountClosed }
+        let trimmed = try validatedEntityName(name)
+        let duplicate = accounts.values.contains {
+            $0.id != id && !$0.closed
+                && $0.name.compare(trimmed, options: .caseInsensitive) == .orderedSame
+        }
+        guard !duplicate else { throw MutationError.duplicateName }
+        guard account.name != trimmed else { return }
+
+        var copy = self
+        account.name = trimmed
+        copy.setAccount(account)
+        if account.type == .creditCard,
+           let paymentID = copy.paymentCategoryID(forCard: id),
+           var payment = copy.categories[paymentID] {
+            payment.name = "Payment: \(trimmed)"
+            copy.setCategory(payment)
+        }
+        copy.recordAudit(
+            entityType: "account",
+            entityID: id.description,
+            eventKind: "accountRenamed",
+            nowEpoch: nowEpoch
+        )
+        try copy.bumpRevision()
+        self = copy
+    }
+
+    /// Explicit destructive close for a duplicate or mistaken account: every
+    /// non-voided row on the account is soft-voided (imported rows keep their
+    /// import identity, so a later sync cannot resurrect them) or removed
+    /// (manual and system rows, which have no remote identity), then the
+    /// account is closed. Register and projection effects of the rows vanish
+    /// with them; the audit trail records each row and the close. Rows in a
+    /// closed month, reconciled rows, transfer-pair legs (the counterparty
+    /// belongs to another account), and rows with live refund dependents on
+    /// other accounts block the operation so nothing outside this account is
+    /// changed implicitly.
+    @discardableResult
+    public mutating func closeAccountVoidingHistory(
+        accountID: AccountID,
+        nowEpoch: Int64
+    ) throws -> AccountCloseSummary {
+        guard let account = accounts[accountID] else { throw MutationError.accountNotFound }
+        guard !account.closed else { throw MutationError.accountClosed }
+        let rows = transactions.values
+            .filter { $0.accountID == accountID && $0.postingState != .voided }
+            .sorted { $0.id.description < $1.id.description }
+        let ownIDs = Set(rows.map(\.id))
+        for row in rows {
+            guard !isMonthClosed(row.date.budgetMonth) else { throw MutationError.closedMonth }
+            guard row.cleared != .reconciled, !reconciliationMembership.contains(row.id) else {
+                throw MutationError.reconciledTransaction
+            }
+            guard row.transferPairID == nil else { throw MutationError.accountHasTransferPairs }
+            let foreignDependents = transactions.values.contains {
+                $0.refundOfTransactionID == row.id && $0.postingState != .voided && !ownIDs.contains($0.id)
+            }
+            guard !foreignDependents else { throw MutationError.transactionHasDependents }
+        }
+
+        var copy = self
+        var voided = 0
+        var removed = 0
+        for row in rows {
+            if row.sourceKind == .simplefin {
+                var voidedRow = row
+                voidedRow.postingState = .voided
+                voidedRow.stageReason = nil
+                copy.setTransaction(voidedRow)
+                copy.recordAudit(entityType: "transaction", entityID: row.id.description, eventKind: "softVoid", nowEpoch: nowEpoch)
+                voided += 1
+            } else {
+                copy.removeTransaction(row.id)
+                copy.recordAudit(entityType: "transaction", entityID: row.id.description, eventKind: "delete", nowEpoch: nowEpoch)
+                removed += 1
+            }
+        }
+        var closed = account
+        closed.closed = true
+        copy.setAccount(closed)
+        try copy.runReplayAndApplyDecisions()
+        copy.recordAudit(
+            entityType: "account",
+            entityID: accountID.description,
+            eventKind: "accountClosedVoidingHistory",
+            metadata: ["voidedImportedRows": "\(voided)", "removedLocalRows": "\(removed)"],
+            nowEpoch: nowEpoch
+        )
+        try copy.bumpRevision()
+        self = copy
+        return AccountCloseSummary(voidedImportedRows: voided, removedLocalRows: removed)
     }
 
     /// Closes an account only when its register is settled and no workflow

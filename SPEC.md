@@ -97,7 +97,7 @@ The app also creates:
 - System payees `Opening Balance`, `Transfer`, `Reconciliation Balance Adjustment`, `Card Debt Adjustment`, and `Unknown Payee`.
 - “Needs Category” and “Staged/Needs Resolution” register filters. These are workflow states, not budget categories.
 
-A positive opening balance for an on-budget non-card account is an inflow to `Inflow: Ready to Assign`. A negative opening balance is not automatically posted in v1: for a new cash account it requires the user to resolve the overdraft or keep the account off-budget; for a credit card it is allowed as pre-existing debt with no category and no budget-envelope effect. This is an explicit exception to the normal category-required rule. Off-budget accounts may have either opening sign and are register-only.
+An opening balance for an on-budget non-card account is a signed inflow to `Inflow: Ready to Assign`: a positive opening funds RTA and a negative opening (an overdrawn account) reduces it, which may leave RTA negative (§3.3). A negative credit-card opening is allowed as pre-existing debt with no category and no budget-envelope effect. This is an explicit exception to the normal category-required rule. Off-budget accounts may have either opening sign and are register-only.
 
 For v1, all past-month allocation cells are read-only, whether or not the month has explicitly closed; only the current month can be assigned or reallocated. Transactions may be corrected in an earlier **unclosed** month before reconciliation; a closed month requires the explicit reopen workflow in §2.1/§3.8, which triggers a full projection recomputation and a visible “historical change” notice.
 
@@ -120,7 +120,7 @@ The mutation service enforces these rules before writing; SQLite checks/triggers
 | staged unpaired transfer leg without a standalone snapshot | system `Transfer` | null | register included; excluded from envelope projection until the user explicitly categorizes/resolves it |
 | posted on↔on transfer leg | system `Transfer` | null | no direct effect; card-payment exception applies |
 | posted on↔off transfer leg | system `Transfer` | required on the on-budget leg (`spending` or `inflow` kind only), null off-budget | included only on the on-budget leg |
-| opening positive on-budget non-card | `Opening Balance` | RTA (`inflow` kind) | included |
+| opening on-budget non-card, either sign | `Opening Balance` | RTA (`inflow` kind) | signed RTA activity |
 | opening negative credit-card | `Opening Balance` | null | register only; pre-existing debt |
 | opening off-budget | `Opening Balance` | null | register only |
 | voided | may be retained | ignored | excluded |
@@ -204,7 +204,7 @@ RTAStart(next_month) = RTAEnd(m) - CashOverspendingAtEnd(m)
 RTADisplayed(m) = RTAEnd(m)
 ```
 
-Signed RTA activity includes positive cash-account transactions categorized to an inflow/RTA category, positive opening inflows, positive cross-month refund-recovery resolutions (each paired with an offsetting synthetic negative event to the refunding card's payment category, §3.5.3), negative cash-account adjustments, and on-budget legs of off-budget → on-budget transfers (which bring money into the plan). It excludes refunds to a spending category, ordinary credit-card debt-reduction cashback, and on↔on transfers (which move money between accounts already in the plan). `RTAEnd` may be negative; v1 permits over-assignment and displays it in red. Current-month spending does not change RTA immediately. Cash-like underfunding is deducted only when the next month begins. Credit overspending is never deducted from RTA.
+Signed RTA activity includes positive cash-account transactions categorized to an inflow/RTA category, signed on-budget cash-like opening balances, positive cross-month refund-recovery resolutions (each paired with an offsetting synthetic negative event to the refunding card's payment category, §3.5.3), negative cash-account adjustments, and on-budget legs of off-budget → on-budget transfers (which bring money into the plan). It excludes refunds to a spending category, ordinary credit-card debt-reduction cashback, and on↔on transfers (which move money between accounts already in the plan). `RTAEnd` may be negative; v1 permits over-assignment and displays it in red. Current-month spending does not change RTA immediately. Cash-like underfunding is deducted only when the next month begins. Credit overspending is never deducted from RTA.
 
 
 ### 3.4 Derived category values
@@ -528,7 +528,7 @@ For a **new local account with no existing transactions**:
    If completeness is evidenced by the capture/protocol and the requested interval is accepted as complete, use option (b) without the attestation but still show the computed opening and interval. The app must never label the result “complete 90-day history” without evidence.
 4. Compute the opening amount exactly once from the selected branch: `O` for option (a), or `B - Σ(normalized posted amounts in (S,T])` for option (b). Do not set the opening to `B` and then add the same transactions.
 5. Create one opening-balance transaction at `S`, then import every posted transaction with `S < posted <= T` in one database transaction. For option (b), the resulting local **posted register balance** is exactly `B` without double-counting. For option (a), the resulting register balance is `O + Σ(posted (S,T])`, which may differ from `B`; the `SnapshotDiscrepancy` is created in the same commit. Staged card rows are included in the register balance, even though they are excluded from the budget projection.
-6. A positive opening on an on-budget non-card account is categorized to RTA. A negative cash opening is rejected while on-budget and requires the user to resolve the overdraft or keep the account off-budget. A negative credit-card opening is allowed as pre-existing debt with no category/payment movement. A positive credit-card opening pauses the `SimpleFINLink` with `pause_reason = positiveCardSnapshot`; it cannot be silently normalized into v1.
+6. An opening of either sign on an on-budget non-card account is categorized to RTA as signed activity; a negative derived opening is an overdraft that reduces RTA. A negative credit-card opening is allowed as pre-existing debt with no category/payment movement. A positive credit-card opening pauses the `SimpleFINLink` with `pause_reason = positiveCardSnapshot`; it cannot be silently normalized into v1.
 7. Set the per-account cursor to `T` only after the opening row, imports/staged rows, link metadata, and import identities commit successfully. A staged positive-card row or unresolved snapshot does not block cursor advancement, but it leaves the link paused and visible.
 
 For an existing local account with any transaction but no SimpleFIN cursor/link, v1 refuses automatic first linking: there is no safe matching primitive for the user's manual history. The user must create a new local account for the link or deliberately rebuild the local account after exporting it. An account already linked with a cursor uses the cursor path. After each sync, compare the latest normalized snapshot with `registerBalanceAsOf(account, T)`: sum all non-voided `posted`, `needsCategory`, and `staged` local rows whose replay-order effective timestamp is `<= T` (imported rows use `effective_at_epoch`; manual rows use immutable-budget-timezone date-noon). v1 rejects/quarantines future-dated rows before they become local rows, so this cutoff is also a defensive invariant. Create a `SnapshotDiscrepancy` when they differ. For a cash account, the user may confirm a signed RTA adjustment; for a credit card, the user may confirm a budget-neutral `Card Debt Adjustment` only if the normalized `projectionBalance` remains `<= 0`. If either adjustment would cross a card above zero, pause the link and leave the discrepancy open.
@@ -577,7 +577,7 @@ Set `LSUIElement = true` in Info.plist. Use the SwiftUI `openWindow` environment
 
 Use a native `NavigationSplitView`:
 
-- Accounts sidebar with account register balances, needs-category/staged counts, and closed state.
+- Accounts sidebar with account register balances, needs-category/staged counts, and closed state; per-account rename and close (§2.1 close guard) actions, and a toggle to show or hide closed accounts.
 - Category groups and categories with Budgeted, Activity, and Available; current-month “Move Money…” action with source/destination validation, including payment-category sources and an explanation when assigning to a credit-overspent category retroactively funds card spending.
 - Current and historical month navigation; future months are visibly read-only in v1.
 - Transaction register with search, filters, category-required validation, posting state, cleared state, approval, manual transfer pairing, and reconciliation.

@@ -46,7 +46,6 @@ public enum MutationError: Error, Equatable, Sendable {
     case categoryRequired
     case categoryNotAllowed                  // kind/sign mismatch, cc_payment direct use, system misuse
     case cardBalanceWouldBecomePositive
-    case negativeCashOpeningBalance
     case positiveCardOpeningBalance
     case refundNotPositive
     case refundOriginInvalid
@@ -82,6 +81,7 @@ public enum MutationError: Error, Equatable, Sendable {
     case monthNotClosed
     case monthAlreadyClosed
     case accountHasActivity                  // close-account guard
+    case accountHasTransferPairs             // close-voiding-history guard: unpair first
     case categoryHasAvailable                // hide-category guard
 
     case arithmeticOverflow

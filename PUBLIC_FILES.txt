@@ -62,6 +62,7 @@ Sources/LedgerCore/Support/MoneyParser.swift
 Sources/LedgerCore/Support/SourceOrderKey.swift
 THIRD_PARTY_NOTICES.md
 Tests/LedgerCoreTests/CalendarOrderingTests.swift
+Tests/LedgerCoreTests/AccountManagementTests.swift
 Tests/LedgerCoreTests/CategoryManagementTests.swift
 Tests/LedgerCoreTests/CounterOverflowTests.swift
 Tests/LedgerCoreTests/EndToEndFlowTests.swift
