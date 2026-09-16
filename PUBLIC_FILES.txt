@@ -62,6 +62,7 @@ Sources/LedgerCore/Automation/WorkspaceAutomation.swift
 Sources/LedgerCore/Budget/BudgetWorkspace.swift
 Sources/LedgerCore/Budget/ProjectionTypes.swift
 Sources/LedgerCore/Budget/ReplayEngine.swift
+Sources/LedgerCore/Budget/WorkspaceClosedAccountReviews.swift
 Sources/LedgerCore/Budget/WorkspaceMutations.swift
 Sources/LedgerCore/Budget/WorkspaceSyncResolution.swift
 Sources/LedgerCore/Budget/WorkspaceTransfers.swift
@@ -110,6 +111,7 @@ Tests/LedgerCoreTests/AssistantTests.swift
 Tests/LedgerCoreTests/AutomationRuleTests.swift
 Tests/LedgerCoreTests/CalendarOrderingTests.swift
 Tests/LedgerCoreTests/CategoryManagementTests.swift
+Tests/LedgerCoreTests/ClosedAccountReviewTests.swift
 Tests/LedgerCoreTests/CounterOverflowTests.swift
 Tests/LedgerCoreTests/EndToEndFlowTests.swift
 Tests/LedgerCoreTests/FileImportTests.swift

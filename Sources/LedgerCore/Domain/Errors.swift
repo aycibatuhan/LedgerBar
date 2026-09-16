@@ -43,6 +43,7 @@ public enum MutationError: Error, Equatable, Sendable {
     case closedMonth
     case accountNotFound
     case accountClosed
+    case accountNotClosed
     case categoryRequired
     case categoryNotAllowed                  // kind/sign mismatch, cc_payment direct use, system misuse
     case cardBalanceWouldBecomePositive

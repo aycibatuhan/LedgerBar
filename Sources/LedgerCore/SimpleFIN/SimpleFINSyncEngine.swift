@@ -111,6 +111,12 @@ public enum SimpleFINSyncEngine {
         guard let localAccount = workspace.accounts[localAccountID] else {
             throw MutationError.accountNotFound
         }
+        // A closed account no longer participates: importing into it would
+        // resurrect voided history and raise review items nobody can decide.
+        // Like an account-less link, the workspace and cursor stay untouched.
+        guard !localAccount.closed else {
+            return outcome
+        }
         try SimpleFINSynchronizer.validateSignNormalization(
             accountType: localAccount.type,
             signNormalization: link.signNormalization

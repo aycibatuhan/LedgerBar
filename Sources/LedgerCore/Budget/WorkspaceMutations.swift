@@ -187,6 +187,9 @@ extension BudgetWorkspace {
         var closed = account
         closed.closed = true
         copy.setAccount(closed)
+        // Review items for this account can no longer be decided once its
+        // rows are voided and it is closed; settle them here so none strand.
+        copy.settleOpenReviewItems(forClosedAccount: accountID, nowEpoch: nowEpoch)
         try copy.runReplayAndApplyDecisions()
         copy.recordAudit(
             entityType: "account",
@@ -225,6 +228,7 @@ extension BudgetWorkspace {
         var closed = account
         closed.closed = true
         copy.setAccount(closed)
+        copy.settleOpenReviewItems(forClosedAccount: accountID, nowEpoch: nowEpoch)
         try copy.runReplayAndApplyDecisions()
         copy.recordAudit(
             entityType: "account",

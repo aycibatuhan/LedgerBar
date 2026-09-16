@@ -225,6 +225,33 @@ struct SimpleFINInitialLinkValidationTests {
         #expect(outcome.discrepancyID == nil)
     }
 
+    @Test func closedLocalAccountIsSkippedWithoutImportsOrReviewItems() throws {
+        var workspace = try makeWorkspace(timeZone: "UTC")
+        let accountID = try workspace.addAccount(
+            name: "Closed", type: .checking, onBudget: true,
+            openingBalance: 0, openingDate: date("2025-01-01"), nowEpoch: testEpoch
+        )
+        try workspace.closeAccount(accountID: accountID, nowEpoch: testEpoch)
+        let before = workspace
+        var link = SimpleFINAccountLink(
+            connectionKey: "conn:c1", remoteAccountID: "acct-1", localAccountID: accountID
+        )
+        let response = try makeResponse(
+            [remoteTransaction("t-1", amount: "-12.00", posted: day(7))],
+            balance: "88.00", balanceDate: day(10)
+        )
+        let outcome = try SimpleFINSyncEngine.applyAccountSync(
+            response: response, link: &link,
+            window: .initialLink(startEpoch: day(5), balanceDateEpoch: day(10)),
+            workspace: &workspace, nowEpoch: day(15)
+        )
+        #expect(outcome.importedTransactionIDs.isEmpty)
+        #expect(outcome.discrepancyID == nil)
+        #expect(outcome.newCursor == nil)
+        #expect(link.lastSuccessfulPostedEpoch == nil)
+        #expect(workspace == before, "a closed account's workspace is untouched")
+    }
+
     @Test func postedZeroExcludedFromCalculationAndEngineWindow() throws {
         let calculation = try SimpleFINSynchronizer.initialLinkCalculation(
             snapshotBalanceDecimalString: "97.00",

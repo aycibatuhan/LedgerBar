@@ -420,6 +420,22 @@ final class AppModel {
         }
     }
 
+    /// Settles review items stranded on a closed account. The ledger does not
+    /// change; each item is recorded in the audit history as dismissed because
+    /// its account was closed.
+    func dismissReviewItems(forClosedAccount accountID: AccountID) async {
+        actionError = nil
+        let now = nowEpoch
+        let name = accountName(accountID)
+        let cleanup: ClosedAccountReviewCleanup? = await perform { workspace in
+            try workspace.dismissReviewItems(forClosedAccount: accountID, nowEpoch: now)
+        }
+        guard let cleanup else { return }
+        infoMessage = cleanup.total == 0
+            ? "\(name) has no open review items."
+            : "Dismissed \(cleanup.total) review item(s) for the closed account \(name). The ledger was not changed."
+    }
+
     /// Read-only rule preview computed from the current snapshot (no write).
     func previewRules(scope: RuleApplicationScope) async -> [RulePreviewItem] {
         guard let snapshot else { return [] }
@@ -570,6 +586,7 @@ final class AppModel {
         case .closedMonth: return "That month is closed. Reopen it first to make changes."
         case .accountNotFound: return "Account not found."
         case .accountClosed: return "That account is closed."
+        case .accountNotClosed: return "Only review items for a closed account can be dismissed this way."
         case .categoryRequired: return "Choose a category."
         case .categoryNotAllowed: return "That category is not allowed for this transaction."
         case .cardBalanceWouldBecomePositive: return "This would make the credit card balance positive, which v1 does not support."

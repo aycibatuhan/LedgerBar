@@ -106,6 +106,22 @@ struct MainWindowView: View {
                             .tag(SidebarItem.account(account.id))
                             .contextMenu { accountMenu(for: account) }
                     }
+                    if closedAccountCount > 0 {
+                        Button {
+                            showClosedAccounts.toggle()
+                        } label: {
+                            Label(
+                                showClosedAccounts
+                                    ? "Hide Closed Accounts"
+                                    : "Show \(closedAccountCount) Closed Account\(closedAccountCount == 1 ? "" : "s")",
+                                systemImage: showClosedAccounts ? "eye.slash" : "lock"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("ledgerbar.toggle-closed-accounts")
+                    }
                 }
             }
             .navigationSplitViewColumnWidth(min: 230, ideal: 260)
@@ -232,9 +248,13 @@ struct MainWindowView: View {
             }
             if let summary {
                 if selection == .account(accountID) { selection = .allAccounts }
-                model.infoMessage = "\(account.name) is closed. \(summary.voidedImportedRows) imported transactions were voided and \(summary.removedLocalRows) local rows removed. Use Show Closed Accounts to see it."
+                model.infoMessage = "\(account.name) is closed. \(summary.voidedImportedRows) imported transactions were voided and \(summary.removedLocalRows) local rows removed. Use Show Closed Accounts at the bottom of the account list to see it."
             }
         }
+    }
+
+    private var closedAccountCount: Int {
+        (model.snapshot?.accounts ?? []).filter(\.closed).count
     }
 
     private var sortedAccounts: [AccountRow] {

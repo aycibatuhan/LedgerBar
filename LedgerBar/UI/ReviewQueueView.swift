@@ -74,6 +74,46 @@ struct ReviewQueueView: View {
     }
 }
 
+/// Shown instead of the decision buttons when the item's account is closed:
+/// those decisions can no longer apply, so the only action is to dismiss the
+/// account's stranded items, which leaves the ledger unchanged.
+private struct ClosedAccountReviewNote: View {
+    @Environment(AppModel.self) private var model
+    let accountID: AccountID
+    @State private var confirming = false
+
+    private var itemCount: Int {
+        model.snapshot?.openReviewItemCount(forClosedAccount: accountID) ?? 0
+    }
+
+    var body: some View {
+        let name = model.accountName(accountID)
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Label("\(name) is closed, so this item can no longer be decided.", systemImage: "lock")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button(itemCount > 1 ? "Dismiss \(itemCount) Items" : "Dismiss") {
+                confirming = true
+            }
+            .buttonStyle(.bordered)
+        }
+        .confirmationDialog(
+            itemCount > 1 ? "Dismiss \(itemCount) review items for \(name)?" : "Dismiss this review item?",
+            isPresented: $confirming,
+            titleVisibility: .visible
+        ) {
+            Button("Dismiss") {
+                Task { await model.dismissReviewItems(forClosedAccount: accountID) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The ledger does not change. Each item is marked dismissed in the audit history because its account is closed.")
+        }
+    }
+}
+
 private struct SectionHeader: View {
     let title: String
     let count: Int
@@ -122,6 +162,9 @@ private struct SnapshotDiscrepancyCard: View {
             }
             .font(.callout)
 
+            if let closedAccountID = model.snapshot?.closedAccountID(forDiscrepancy: discrepancy) {
+                ClosedAccountReviewNote(accountID: closedAccountID)
+            } else {
             Text("The local register and the provider snapshot differ at the observed date. Choose an audited adjustment, or explicitly attest that no accounting adjustment is required.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -139,6 +182,7 @@ private struct SnapshotDiscrepancyCard: View {
                 }
                 .buttonStyle(.bordered)
                 .help("Records an explicit manual attestation without changing the ledger.")
+            }
             }
         }
         .padding(14)
@@ -262,7 +306,11 @@ private struct SyncConflictCard: View {
                 metadataColumn("Remote observation", conflict.newMetadata)
             }
 
-            actionButtons
+            if let closedAccountID = model.snapshot?.closedAccountID(forConflict: conflict) {
+                ClosedAccountReviewNote(accountID: closedAccountID)
+            } else {
+                actionButtons
+            }
         }
         .padding(14)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))

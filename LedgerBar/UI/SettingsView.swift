@@ -242,7 +242,12 @@ struct SimpleFINSettingsPane: View {
                         Text("Cursor: \(link.lastSuccessfulPostedEpoch.map { Date(timeIntervalSince1970: TimeInterval($0)).formatted(date: .abbreviated, time: .shortened) } ?? "not synced")")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        if model.simplefin?.wasPausedByFullDisconnect(identity: link.identity) == true {
+                        if let accountID = link.localAccountID,
+                           model.snapshot?.accounts.first(where: { $0.id == accountID })?.closed == true {
+                            Text("The linked account is closed; this link no longer syncs.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else if model.simplefin?.wasPausedByFullDisconnect(identity: link.identity) == true {
                             Text("Paused: awaiting a matching remote identity after reconnect")
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
@@ -269,7 +274,8 @@ struct SimpleFINSettingsPane: View {
                     // cursor, no account); the recovery path is re-linking
                     // the remote account, which rebinds by identity.
                     if link.status == .paused,
-                       link.localAccountID != nil,
+                       let accountID = link.localAccountID,
+                       model.snapshot?.accounts.first(where: { $0.id == accountID })?.closed != true,
                        model.simplefin?.canManuallyResumeLink(identity: link.identity) == true {
                         Button("Resume") {
                             Task { await model.resumeLink(identity: link.identity) }
