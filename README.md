@@ -18,8 +18,6 @@ model running on this machine.
        alt="The menu-bar popover: Ready to Assign, assigned total, activity, and needs-attention counts for the month">
 </p>
 
-*Screenshots show a synthetic demo budget, not real bank data.*
-
 ## Where to look
 
 | I want to… | Read |
