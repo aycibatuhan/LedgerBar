@@ -27,6 +27,18 @@ final class AppModel {
     private(set) var snapshot: BudgetWorkspaceSnapshot?
     private(set) var projection: ProjectionResult?
     private(set) var simplefin: SimpleFINConnectionState?
+    /// Registry of every budget in the database (D8).
+    private(set) var budgets: [BudgetSummary] = []
+    // Assistant (docs/LOCAL-AI.md); per-budget session state lives here so a
+    // budget switch can drop it wholesale.
+    var assistantSettings = AssistantSettings()
+    var assistantTurns: [AssistantTurn] = []
+    var assistantLive: AssistantLiveState?
+    var assistantPrefill: String?
+    var assistantDrill: AssistantToolResult?
+    @ObservationIgnored var assistantSession: AssistantSession?
+    @ObservationIgnored var assistantSessionBudgetID: BudgetID?
+    @ObservationIgnored var assistantTask: Task<Void, Never>?
     // Set from the SimpleFIN flows (separate file); views treat as read-only.
     var syncing = false
     var lastSyncSummary: String?
@@ -126,7 +138,7 @@ final class AppModel {
         bootstrapped = true
         if case .failed = phase { return }
         do {
-            _ = try await service.loadFirst()
+            _ = try await service.loadActive()
             do {
                 try await credentialLifecycle.retryPendingOperations(nowEpoch: nowEpoch)
             } catch {
@@ -134,6 +146,7 @@ final class AppModel {
             }
             try await advanceBudgetClock()
             await refresh()
+            await loadAssistantSettings()
             phase = .ready
             startObservation()
             startActivationObserver()
@@ -145,24 +158,156 @@ final class AppModel {
         }
     }
 
-    func createBudget(currency: String, timeZoneIdentifier: String, firstMonth: BudgetMonth) async {
+    func createBudget(name: String = "My Budget", currency: String, timeZoneIdentifier: String, firstMonth: BudgetMonth) async {
         do {
             let calendar = try BudgetCalendar(timeZoneIdentifier: timeZoneIdentifier)
             guard let today = calendar.budgetDate(fromEpoch: nowEpoch) else {
                 throw BudgetCalendarError.unrepresentableDate
             }
+            let wasReady = phase == .ready
             _ = try await service.createBudget(
-                name: "My Budget",
+                name: name.trimmingCharacters(in: .whitespaces).isEmpty ? "My Budget" : name,
                 currency: currency,
                 timeZoneIdentifier: timeZoneIdentifier,
                 firstMonth: firstMonth,
                 currentMonth: today.budgetMonth,
                 nowEpoch: nowEpoch
             )
+            resetPerBudgetState()
             await refresh()
             phase = .ready
             startObservation()
-            startActivationObserver()
+            if !wasReady { startActivationObserver() }
+        } catch {
+            actionError = friendlyMessage(error)
+        }
+    }
+
+    // MARK: - Budget registry (D8)
+
+    /// Anything held in memory for the previous budget must not leak into
+    /// the next one.
+    private func resetPerBudgetState() {
+        pendingClaim = nil
+        pendingSetupToken = nil
+        pendingTrustedHost = nil
+        lastSyncSummary = nil
+        resetAssistantForBudgetChange()
+    }
+
+    func switchBudget(to id: BudgetID) async {
+        guard id != snapshot?.budget.id, !syncing else {
+            if syncing { actionError = "Wait for the running sync to finish before switching budgets." }
+            return
+        }
+        do {
+            _ = try await service.switchBudget(to: id, nowEpoch: nowEpoch)
+            resetPerBudgetState()
+            try await advanceBudgetClock()
+            await refresh()
+            startObservation()
+            await autoSyncIfDue()
+        } catch {
+            actionError = friendlyMessage(error)
+        }
+    }
+
+    func renameBudget(_ id: BudgetID, to name: String) async {
+        if id == snapshot?.budget.id {
+            await perform { try $0.renameBudget(to: name) }
+            return
+        }
+        await withOtherBudgetLoaded(id) { try $0.renameBudget(to: name) }
+    }
+
+    func setBudgetArchived(_ id: BudgetID, archived: Bool) async {
+        let now = nowEpoch
+        if id == snapshot?.budget.id {
+            await perform { try $0.setBudgetArchived(archived, nowEpoch: now) }
+            return
+        }
+        await withOtherBudgetLoaded(id) { try $0.setBudgetArchived(archived, nowEpoch: now) }
+    }
+
+    /// Applies a mutation to a budget that is not active by loading it into
+    /// the service, mutating, and restoring the active one. The observation
+    /// stream is rebuilt afterwards.
+    private func withOtherBudgetLoaded(_ id: BudgetID, _ body: @escaping @Sendable (inout BudgetWorkspace) throws -> Void) async {
+        guard let activeID = snapshot?.budget.id else { return }
+        do {
+            _ = try await service.load(budgetID: id)
+            _ = try await service.transact(nowEpoch: nowEpoch, body)
+            _ = try await service.load(budgetID: activeID)
+            await refresh()
+        } catch {
+            actionError = friendlyMessage(error)
+            _ = try? await service.load(budgetID: activeID)
+            await refresh()
+        }
+    }
+
+    func deleteBudget(_ id: BudgetID) async {
+        do {
+            try await service.deleteBudget(id)
+            await refresh()
+            infoMessage = "The budget was deleted."
+        } catch BudgetMutationServiceError.budgetHasCredential {
+            actionError = "That budget still has a SimpleFIN connection. Switch to it, disconnect SimpleFIN in Settings, then delete it."
+        } catch BudgetMutationServiceError.budgetIsActive {
+            actionError = "Switch to another budget before deleting this one."
+        } catch {
+            actionError = friendlyMessage(error)
+        }
+    }
+
+    func exportBudget(_ id: BudgetID) async {
+        do {
+            let snapshotToExport: BudgetWorkspaceSnapshot
+            if id == snapshot?.budget.id, let snapshot {
+                snapshotToExport = snapshot
+            } else {
+                guard let activeID = snapshot?.budget.id else { return }
+                let loaded = try await service.load(budgetID: id)
+                _ = try await service.load(budgetID: activeID)
+                snapshotToExport = loaded
+            }
+            let export = BudgetExport(snapshot: snapshotToExport, exportedAtEpoch: nowEpoch, appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")
+            let data = try BudgetTransfer.encode(export)
+            let panel = NSSavePanel()
+            panel.title = "Export Budget"
+            panel.nameFieldStringValue = "\(snapshotToExport.budget.name).ledgerbar-budget.json"
+            panel.allowedContentTypes = [.json]
+            activateApp()
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            try data.write(to: url, options: .atomic)
+            infoMessage = "Exported “\(snapshotToExport.budget.name)”. The file contains the full ledger (unencrypted JSON) but no bank credentials; protect it accordingly."
+        } catch {
+            actionError = friendlyMessage(error)
+        }
+    }
+
+    func importBudgetFromFile() async {
+        let panel = NSOpenPanel()
+        panel.title = "Import Budget"
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        activateApp()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            let data = try Data(contentsOf: url)
+            let export = try BudgetTransfer.decode(data)
+            _ = try await service.importBudget(export, name: nil, nowEpoch: nowEpoch)
+            resetPerBudgetState()
+            await refresh()
+            startObservation()
+            infoMessage = "Imported “\(export.snapshot.budget.name)” as a new budget with fresh identities. Bank accounts must be linked again if you use SimpleFIN."
+        } catch let error as BudgetTransferError {
+            switch error {
+            case .malformed: actionError = "That file is not a LedgerBar budget export."
+            case .unsupportedFormatVersion(let version): actionError = "That export was written by a newer LedgerBar (format \(version))."
+            }
         } catch {
             actionError = friendlyMessage(error)
         }
@@ -198,13 +343,15 @@ final class AppModel {
             projection = nil
         }
         simplefin = try? await service.simpleFINState()
+        budgets = (try? await service.listBudgets()) ?? []
     }
 
     /// Manual ValueObservation → @Observable bridge (§6.1): each committed
     /// revision triggers a state refresh from the service.
     private func startObservation() {
         observationTask?.cancel()
-        let stream = store.observeRevisions()
+        guard let budgetID = snapshot?.budget.id else { return }
+        let stream = store.observeRevisions(budgetID: budgetID)
         observationTask = Task { [weak self] in
             var lastSeen: Int64 = -1
             do {
@@ -273,6 +420,13 @@ final class AppModel {
         }
     }
 
+    /// Read-only rule preview computed from the current snapshot (no write).
+    func previewRules(scope: RuleApplicationScope) async -> [RulePreviewItem] {
+        guard let snapshot else { return [] }
+        guard let workspace = try? BudgetWorkspace(snapshot: snapshot) else { return [] }
+        return workspace.previewRules(scope: scope)
+    }
+
     // MARK: - Backup (§7.3)
 
     func backupDatabase() async {
@@ -325,6 +479,15 @@ final class AppModel {
             return "Data integrity check failed (\(integrity.code.rawValue)). The change was rolled back."
         case let mutation as MutationError:
             return Self.mutationMessage(mutation)
+        case let importError as ImportError:
+            switch importError {
+            case .unreadableFile: return "The file could not be decoded as text (UTF-8 or Windows-1252)."
+            case .unsupportedFormat: return "The file is not a recognizable CSV, OFX, or QFX export."
+            case .emptyFile: return "The file contains no rows."
+            case .mappingColumnOutOfRange: return "A mapped column does not exist in every row; check the delimiter and mapping."
+            case .noAccountBlock: return "The OFX file contains no statement block."
+            case .accountNotEligible: return "Choose an open account in this budget."
+            }
         case is ArithmeticOverflowError:
             return "The amount is too large to process. The change was rolled back."
         case let parse as MoneyParseError:
@@ -419,6 +582,9 @@ final class AppModel {
         case .transactionImmutable: return "Imported identity fields cannot be edited."
         case .reconciledTransaction: return "That transaction is reconciled. Un-reconcile it first."
         case .transactionHasDependents: return "That transaction has linked rows; resolve them first."
+        case .splitInvalid: return "Split components must be at least two nonzero amounts with the transaction's sign that add up exactly to its total."
+        case .splitNotAllowed: return "Only a normal outflow on an on-budget account can be split; transfers, refunds, and system rows cannot."
+        case .transactionIsSplit: return "This transaction is split. Change the split so its components match, or categorize it to remove the split, before editing the amount."
         case .unsupportedTransferPair: return "That transfer direction is not supported in v1."
         case .transferLegsInvalid: return "Transfer legs must be equal and opposite, in the same month, within ±7 days."
         case .transferPairNotFound: return "Transfer pair not found."
@@ -437,6 +603,9 @@ final class AppModel {
         case .accountHasActivity: return "Close is blocked while the account has a balance or unresolved rows. Use “Void History and Close” for a duplicate or mistaken account."
         case .accountHasTransferPairs: return "Unpair this account's transfers before voiding its history; the other side of each transfer belongs to another account."
         case .categoryHasAvailable: return "Move this category's available money elsewhere before hiding it."
+        case .ruleInvalid: return "A rule needs a name, at least one condition, and at least one action that refers to existing categories and accounts."
+        case .scheduleInvalid: return "Check the schedule: it needs a name, payee, nonzero amount, a valid recurrence, an end date after the start, and an open account."
+        case .scheduleOccurrenceResolved: return "That expected occurrence is already matched, entered, or skipped, or the transaction already serves another occurrence."
         case .arithmeticOverflow: return "The amount is too large to process."
         }
     }

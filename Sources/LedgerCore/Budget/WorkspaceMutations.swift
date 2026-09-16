@@ -171,7 +171,7 @@ extension BudgetWorkspace {
         var voided = 0
         var removed = 0
         for row in rows {
-            if row.sourceKind == .simplefin {
+            if row.sourceKind == .simplefin || row.sourceKind == .file {
                 var voidedRow = row
                 voidedRow.postingState = .voided
                 voidedRow.stageReason = nil
@@ -532,7 +532,8 @@ extension BudgetWorkspace {
         kind: TransactionKind,
         amount: Milliunits,
         categoryID: CategoryID?,
-        refundOf: TransactionID?
+        refundOf: TransactionID?,
+        refundOfComponentIndex: Int? = nil
     ) throws {
         let eligible = budgetEligible(account, budgetCurrency: budget.currency)
         if !eligible {
@@ -565,6 +566,14 @@ extension BudgetWorkspace {
                       origin.amountMilliunits < 0,
                       origin.kind == .normal
                 else { throw MutationError.refundOriginInvalid }
+                // A split origin is refunded per component (D3.3).
+                if let components = origin.splits {
+                    guard let index = refundOfComponentIndex, components.indices.contains(index),
+                          components[index].categoryID == id
+                    else { throw MutationError.refundOriginInvalid }
+                } else {
+                    guard refundOfComponentIndex == nil else { throw MutationError.refundOriginInvalid }
+                }
             }
         case .openingBalance, .adjustment:
             throw MutationError.categoryNotAllowed // system-created only
@@ -581,6 +590,8 @@ extension BudgetWorkspace {
         memo: String? = nil,
         kind: TransactionKind = .normal,
         refundOf: TransactionID? = nil,
+        refundOfComponentIndex: Int? = nil,
+        splits: [SplitComponent]? = nil,
         nowEpoch: Int64
     ) throws -> TransactionID {
         guard let account = accounts[accountID] else { throw MutationError.accountNotFound }
@@ -588,10 +599,15 @@ extension BudgetWorkspace {
         guard date.budgetMonth >= budget.firstMonth else { throw MutationError.dateBeforeFirstMonth }
         guard date.budgetMonth <= currentMonth else { throw MutationError.futureDatedTransaction }
         guard !isMonthClosed(date.budgetMonth) else { throw MutationError.closedMonth }
-        try validateCategoryChoice(
-            account: account, kind: kind, amount: amountMilliunits,
-            categoryID: categoryID, refundOf: refundOf
-        )
+        if let splits {
+            guard categoryID == nil, kind == .normal, refundOf == nil else { throw MutationError.splitNotAllowed }
+            try validateSplitComponents(splits, account: account, amount: amountMilliunits)
+        } else {
+            try validateCategoryChoice(
+                account: account, kind: kind, amount: amountMilliunits,
+                categoryID: categoryID, refundOf: refundOf, refundOfComponentIndex: refundOfComponentIndex
+            )
+        }
 
         var copy = self
         let payeeID = copy.findOrCreateUserPayee(named: payeeName)
@@ -611,7 +627,9 @@ extension BudgetWorkspace {
             postingState: .posted,
             categoryID: categoryID,
             refundOfTransactionID: refundOf,
-            kind: kind
+            kind: kind,
+            splits: splits,
+            refundOfComponentIndex: refundOfComponentIndex
         )
         copy.setTransaction(row)
         let result = try copy.runReplayAndApplyDecisions()
@@ -636,9 +654,89 @@ extension BudgetWorkspace {
         if kind == .normal, let categoryID {
             copy.updatePayeeLearning(payeeID: payeeID, categoryID: categoryID, amount: amountMilliunits)
         }
+        if let today = calendar.budgetDate(fromEpoch: nowEpoch) {
+            copy.matchSchedules(asOf: max(today, date), nowEpoch: nowEpoch)
+        }
         try copy.bumpRevision()
         self = copy
         return row.id
+    }
+
+    // MARK: - Split transactions (D3)
+
+    /// Split invariants: at least two components, every component nonzero with
+    /// the parent's sign, an exact checked sum, and only spending categories
+    /// (`Uncategorized` allowed — the row then stays `needsCategory`). Only a
+    /// normal outflow on a budget-eligible account can be split.
+    func validateSplitComponents(_ components: [SplitComponent], account: AccountRow, amount: Milliunits) throws {
+        guard budgetEligible(account, budgetCurrency: budget.currency), amount < 0 else {
+            throw MutationError.splitNotAllowed
+        }
+        guard components.count >= 2 else { throw MutationError.splitInvalid }
+        var sum: Milliunits = 0
+        for component in components {
+            guard component.amountMilliunits < 0 else { throw MutationError.splitInvalid }
+            guard let category = categories[component.categoryID], category.kind == .spending else {
+                throw MutationError.categoryNotAllowed
+            }
+            sum = try addChecked(sum, component.amountMilliunits)
+        }
+        guard sum == amount else { throw MutationError.splitInvalid }
+    }
+
+    /// Replaces the row's category with component allocations (or replaces an
+    /// existing split). Bank identity, amount, date, and payee are untouched.
+    /// Linked refunds addressed to a component that still exists keep their
+    /// materialized category in sync; refunds without a component address are
+    /// re-staged by replay as `missingRefundOrigin` (§3.8 origin-edit rule).
+    public mutating func setSplits(
+        transactionID: TransactionID,
+        components: [SplitComponent],
+        nowEpoch: Int64
+    ) throws {
+        guard var row = transactions[transactionID], row.postingState != .voided else {
+            throw MutationError.transactionNotFound
+        }
+        guard row.cleared != .reconciled, !reconciliationMembership.contains(transactionID) else {
+            throw MutationError.reconciledTransaction
+        }
+        guard !isMonthClosed(row.date.budgetMonth) else { throw MutationError.closedMonth }
+        guard row.postingState == .posted || row.postingState == .needsCategory else {
+            throw MutationError.resolutionNotEligible
+        }
+        guard row.kind == .normal, row.transferPairID == nil, row.sourceKind != .system else {
+            throw MutationError.splitNotAllowed
+        }
+        guard let account = accounts[row.accountID] else { throw MutationError.accountNotFound }
+        try validateSplitComponents(components, account: account, amount: row.amountMilliunits)
+
+        var copy = self
+        row.splits = components
+        row.categoryID = nil
+        row.userEditedAtEpoch = nowEpoch
+        row.postingState = components.contains { $0.categoryID == uncategorizedID } ? .needsCategory : .posted
+        copy.setTransaction(row)
+        for (_, var dependent) in copy.transactions
+        where dependent.refundOfTransactionID == transactionID && dependent.postingState != .voided {
+            guard let index = dependent.refundOfComponentIndex, components.indices.contains(index) else {
+                continue // replay stages it (missingRefundOrigin)
+            }
+            if dependent.postingState == .staged {
+                var meta = dependent.stageMetadata ?? StageMetadata()
+                meta.proposedCategoryID = components[index].categoryID
+                dependent.stageMetadata = meta
+            } else {
+                dependent.categoryID = components[index].categoryID
+            }
+            copy.setTransaction(dependent)
+        }
+        try copy.runReplayAndApplyDecisions()
+        copy.recordAudit(
+            entityType: "transaction", entityID: transactionID.description, eventKind: "split",
+            metadata: ["components": String(components.count)], nowEpoch: nowEpoch
+        )
+        try copy.bumpRevision()
+        self = copy
     }
 
     // MARK: - SimpleFIN import materialization (§4.3 steps 1–6, headless core)
@@ -667,6 +765,91 @@ extension BudgetWorkspace {
             return learned
         }
         return amountMilliunits > 0 ? rtaCategoryID : uncategorizedID
+    }
+
+    /// Shared materialization for every import source (docs/DESIGN.md D6.3):
+    /// payee resolution, the closed-month append-only exception, exact-payee
+    /// auto-categorization, the sign default, and the automation-rule pass.
+    /// The caller has already validated the account and the date bounds and
+    /// remains responsible for the source's identity record, replay, and
+    /// revision. The row is inserted into `self` and returned.
+    mutating func materializeImportedRow(
+        accountID: AccountID,
+        sourceKind: SourceKind,
+        sourceOrderKey: SourceOrderKey,
+        date: BudgetDate,
+        effectiveAtEpoch: Int64,
+        payeeName: String?,
+        amountMilliunits: Milliunits,
+        memo: String?,
+        nowEpoch: Int64
+    ) throws -> TransactionRow {
+        guard let account = accounts[accountID] else { throw MutationError.accountNotFound }
+        let payeeID = payeeName.map { findOrCreateUserPayee(named: $0) } ?? systemPayeeID(.unknown)
+        let eligible = budgetEligible(account, budgetCurrency: budget.currency)
+
+        var categoryID: CategoryID?
+        var posting: PostingState = .posted
+        var stageReason: StageReason?
+        var stageMetadata: StageMetadata?
+
+        if isMonthClosed(date.budgetMonth) {
+            // Append-only closed-month exception: staged, never auto-resolved
+            // while closed. Preserve the deterministic normal-path proposal in
+            // sanitized metadata so reopening can restore the workflow without
+            // inventing a category or silently posting the row.
+            posting = .staged
+            stageReason = .closedMonthImport
+            if eligible {
+                let learned = payees[payeeID]?.lastUsedCategoryID
+                let proposed: CategoryID?
+                if account.type == .creditCard && amountMilliunits > 0 {
+                    proposed = nil // card inflows remain explicitly staged
+                } else if let learned,
+                          let learnedCategory = categories[learned],
+                          !learnedCategory.hidden,
+                          learnedCategory.kind != .ccPayment,
+                          learnedCategory.systemKind == nil,
+                          (amountMilliunits > 0 ? learnedCategory.kind == .inflow : learnedCategory.kind == .spending) {
+                    proposed = learned
+                } else if amountMilliunits > 0 {
+                    proposed = rtaCategoryID
+                } else {
+                    proposed = uncategorizedID
+                }
+                stageMetadata = StageMetadata(proposedCategoryID: proposed)
+            }
+        } else {
+            categoryID = importedRowCategory(account: account, payeeID: payeeID, amountMilliunits: amountMilliunits)
+        }
+
+        var row = TransactionRow(
+            budgetID: budget.id,
+            accountID: accountID,
+            payeeID: payeeID,
+            sourceKind: sourceKind,
+            date: date,
+            effectiveAtEpoch: effectiveAtEpoch,
+            sourceOrderKey: sourceOrderKey,
+            memo: memo,
+            amountMilliunits: amountMilliunits,
+            cleared: .uncleared,
+            approved: false,
+            postingState: posting,
+            stageReason: stageReason,
+            stageMetadata: stageMetadata,
+            categoryID: categoryID,
+            kind: .normal,
+            importedDescription: payeeName
+        )
+        // Automation rules run once, at materialization: a rule category
+        // replaces the default chosen above; a rule payee rename keeps the raw
+        // `importedDescription` (D4.2/D4.3). Closed-month rows stay staged.
+        if posting != .staged {
+            try applyImportRules(to: &row, nowEpoch: nowEpoch)
+        }
+        setTransaction(row)
+        return row
     }
 
     /// Materializes one normalized, sign-corrected posted remote row plus its
@@ -707,67 +890,20 @@ extension BudgetWorkspace {
         guard date.budgetMonth >= budget.firstMonth else { throw MutationError.dateBeforeFirstMonth }
 
         var copy = self
-        let payeeID = payeeName.map { copy.findOrCreateUserPayee(named: $0) }
-            ?? copy.systemPayeeID(.unknown)
-        let eligible = budgetEligible(account, budgetCurrency: budget.currency)
         let key = SourceOrderKey.remote(
             connectionKey: connectionKey, accountID: remoteAccountID, transactionID: remoteTransactionID
         )
-
-        var categoryID: CategoryID?
-        var posting: PostingState = .posted
-        var stageReason: StageReason?
-        var stageMetadata: StageMetadata?
-
-        if isMonthClosed(date.budgetMonth) {
-            // Append-only closed-month exception: staged, never auto-resolved
-            // while closed. Preserve the deterministic normal-path proposal in
-            // sanitized metadata so reopening can restore the workflow without
-            // inventing a category or silently posting the row.
-            posting = .staged
-            stageReason = .closedMonthImport
-            if eligible {
-                let learned = copy.payees[payeeID]?.lastUsedCategoryID
-                let proposed: CategoryID?
-                if account.type == .creditCard && amountMilliunits > 0 {
-                    proposed = nil // card inflows remain explicitly staged
-                } else if let learned,
-                          let learnedCategory = copy.categories[learned],
-                          !learnedCategory.hidden,
-                          learnedCategory.kind != .ccPayment,
-                          learnedCategory.systemKind == nil,
-                          (amountMilliunits > 0 ? learnedCategory.kind == .inflow : learnedCategory.kind == .spending) {
-                    proposed = learned
-                } else if amountMilliunits > 0 {
-                    proposed = rtaCategoryID
-                } else {
-                    proposed = uncategorizedID
-                }
-                stageMetadata = StageMetadata(proposedCategoryID: proposed)
-            }
-        } else {
-            categoryID = copy.importedRowCategory(account: account, payeeID: payeeID, amountMilliunits: amountMilliunits)
-        }
-
-        let row = TransactionRow(
-            budgetID: budget.id,
+        let row = try copy.materializeImportedRow(
             accountID: accountID,
-            payeeID: payeeID,
             sourceKind: .simplefin,
+            sourceOrderKey: key,
             date: date,
             effectiveAtEpoch: postedEpoch,
-            sourceOrderKey: key,
-            memo: memo,
+            payeeName: payeeName,
             amountMilliunits: amountMilliunits,
-            cleared: .uncleared,
-            approved: false,
-            postingState: posting,
-            stageReason: stageReason,
-            stageMetadata: stageMetadata,
-            categoryID: categoryID,
-            kind: .normal
+            memo: memo,
+            nowEpoch: nowEpoch
         )
-        copy.setTransaction(row)
 
         // The import record commits with the row: last-seen raw metadata plus
         // the canonical payload hash used for §4.3 change detection.
@@ -798,6 +934,9 @@ extension BudgetWorkspace {
             lastSeenEpoch: nowEpoch
         ))
         try copy.runReplayAndApplyDecisions()
+        if let today = calendar.budgetDate(fromEpoch: nowEpoch) {
+            copy.matchSchedules(asOf: max(today, date), nowEpoch: nowEpoch)
+        }
         try copy.bumpRevision()
         self = copy
         return row.id
@@ -826,7 +965,7 @@ extension BudgetWorkspace {
             .filter { manual in
                 manual.id != imported.id
                     && manual.budgetID == budget.id
-                    && manual.sourceKind == .manual
+                    && (manual.sourceKind == .manual || manual.sourceKind == .file)
                     && manual.postingState != .voided
                     && manual.accountID == imported.accountID
                     && manual.date == imported.date
@@ -913,9 +1052,12 @@ extension BudgetWorkspace {
         row.memo = newMemo
         row.amountMilliunits = newAmountMilliunits
         row.categoryID = copy.importedRowCategory(account: account, payeeID: payeeID, amountMilliunits: newAmountMilliunits)
+        row.importedDescription = newPayeeName
+        row.splits = nil
         row.postingState = .posted
         row.stageReason = nil
         row.stageMetadata = nil
+        try copy.applyImportRules(to: &row, nowEpoch: nowEpoch)
         copy.setTransaction(row)
         try copy.runReplayAndApplyDecisions()
         try copy.bumpRevision()
@@ -1151,10 +1293,13 @@ extension BudgetWorkspace {
         guard let account = accounts[row.accountID] else { throw MutationError.accountNotFound }
         try validateCategoryChoice(
             account: account, kind: row.kind, amount: row.amountMilliunits,
-            categoryID: newCategoryID, refundOf: row.refundOfTransactionID
+            categoryID: newCategoryID, refundOf: row.refundOfTransactionID,
+            refundOfComponentIndex: row.refundOfComponentIndex
         )
 
         var copy = self
+        let wasSplit = row.splits != nil
+        row.splits = nil // categorizing a split row replaces the split (D3)
         row.categoryID = newCategoryID
         row.userEditedAtEpoch = nowEpoch
         if row.postingState == .needsCategory { row.postingState = .posted }
@@ -1164,6 +1309,7 @@ extension BudgetWorkspace {
         // refund's materialized copy before replay (§3.5.3).
         for (_, var dependent) in copy.transactions
         where dependent.refundOfTransactionID == transactionID && dependent.postingState != .voided {
+            if wasSplit { dependent.refundOfComponentIndex = nil }
             if dependent.postingState == .staged {
                 var meta = dependent.stageMetadata ?? StageMetadata()
                 meta.proposedCategoryID = newCategoryID
@@ -1234,6 +1380,7 @@ extension BudgetWorkspace {
         guard row.sourceKind == .manual else { throw MutationError.transactionImmutable }
         guard row.cleared != .reconciled else { throw MutationError.reconciledTransaction }
         guard !isMonthClosed(row.date.budgetMonth) else { throw MutationError.closedMonth }
+        guard row.splits == nil else { throw MutationError.transactionIsSplit }
 
         var copy = self
         if let pairID = row.transferPairID {
@@ -1347,7 +1494,7 @@ extension BudgetWorkspace {
         guard row.sourceKind != .system else { throw MutationError.systemEntityImmutable }
 
         var copy = self
-        if row.sourceKind == .simplefin {
+        if row.sourceKind == .simplefin || row.sourceKind == .file {
             var voided = row
             voided.postingState = .voided
             voided.stageReason = nil
@@ -1676,6 +1823,26 @@ extension BudgetWorkspace {
         account.historyIncomplete = true
         var copy = self
         copy.setAccount(account)
+        try copy.bumpRevision()
+        self = copy
+    }
+
+    // MARK: - Budget identity (D8)
+
+    public mutating func renameBudget(to name: String) throws {
+        let trimmed = try validatedEntityName(name)
+        guard budget.name != trimmed else { return }
+        var copy = self
+        copy.setBudgetName(trimmed)
+        try copy.bumpRevision()
+        self = copy
+    }
+
+    public mutating func setBudgetArchived(_ archived: Bool, nowEpoch: Int64) throws {
+        guard budget.archived != archived else { return }
+        var copy = self
+        copy.setBudgetArchivedFlag(archived)
+        copy.recordAudit(entityType: "budget", entityID: budget.id.description, eventKind: archived ? "budgetArchived" : "budgetUnarchived", nowEpoch: nowEpoch)
         try copy.bumpRevision()
         self = copy
     }

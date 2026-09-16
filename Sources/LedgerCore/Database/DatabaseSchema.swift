@@ -408,6 +408,213 @@ public enum LedgerDatabaseSchema {
                 WHERE local_account_id IS NOT NULL;
             """)
         }
+        migrator.registerMigration("v10-splits-imported-description-file-source") { db in
+            // The `source_kind` CHECK gains 'file' and three nullable columns
+            // are added. SQLite cannot alter a CHECK, so the mirror table is
+            // rebuilt with the 12-step procedure (GRDB runs migrations with
+            // foreign keys off and checks them at the end). All rows and every
+            // identity are copied; child tables keep referencing the same
+            // table name.
+            try db.execute(sql: """
+            CREATE TABLE transactions_new (
+                id TEXT PRIMARY KEY NOT NULL,
+                budget_id TEXT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+                account_id TEXT NOT NULL,
+                payee_id TEXT,
+                source_kind TEXT NOT NULL CHECK(source_kind IN ('manual', 'simplefin', 'system', 'file')),
+                date TEXT NOT NULL CHECK(date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+                effective_at_epoch INTEGER,
+                source_order_key TEXT NOT NULL,
+                memo TEXT,
+                amount_milliunits INTEGER NOT NULL,
+                cleared TEXT NOT NULL CHECK(cleared IN ('uncleared', 'cleared', 'reconciled')),
+                approved INTEGER NOT NULL CHECK(approved IN (0, 1)),
+                flag_color TEXT,
+                posting_state TEXT NOT NULL CHECK(posting_state IN ('needsCategory', 'staged', 'posted', 'voided')),
+                stage_reason TEXT,
+                stage_metadata BLOB,
+                user_edited_at_epoch INTEGER,
+                category_id TEXT,
+                transfer_pair_id TEXT,
+                refund_of_transaction_id TEXT,
+                kind TEXT NOT NULL CHECK(kind IN ('normal', 'refund', 'openingBalance', 'adjustment')),
+                splits BLOB,
+                imported_description TEXT,
+                refund_of_component_index INTEGER CHECK(refund_of_component_index IS NULL OR refund_of_component_index >= 0),
+                UNIQUE(budget_id, source_order_key),
+                UNIQUE(budget_id, id),
+                FOREIGN KEY(budget_id, account_id) REFERENCES accounts(budget_id, id) ON DELETE RESTRICT,
+                FOREIGN KEY(budget_id, payee_id) REFERENCES payees(budget_id, id),
+                FOREIGN KEY(budget_id, category_id) REFERENCES categories(budget_id, id),
+                FOREIGN KEY(budget_id, transfer_pair_id) REFERENCES transfer_pairs(budget_id, id),
+                FOREIGN KEY(budget_id, refund_of_transaction_id) REFERENCES transactions(budget_id, id)
+            );
+            INSERT INTO transactions_new (
+                id, budget_id, account_id, payee_id, source_kind, date, effective_at_epoch,
+                source_order_key, memo, amount_milliunits, cleared, approved, flag_color,
+                posting_state, stage_reason, stage_metadata, user_edited_at_epoch, category_id,
+                transfer_pair_id, refund_of_transaction_id, kind
+            )
+            SELECT
+                id, budget_id, account_id, payee_id, source_kind, date, effective_at_epoch,
+                source_order_key, memo, amount_milliunits, cleared, approved, flag_color,
+                posting_state, stage_reason, stage_metadata, user_edited_at_epoch, category_id,
+                transfer_pair_id, refund_of_transaction_id, kind
+            FROM transactions;
+            DROP TABLE transactions;
+            ALTER TABLE transactions_new RENAME TO transactions;
+            CREATE INDEX transactions_account_date ON transactions(account_id, date, effective_at_epoch);
+            CREATE INDEX transactions_category_date ON transactions(category_id, date);
+            CREATE INDEX transactions_posting_date ON transactions(posting_state, date);
+            CREATE INDEX transactions_transfer_pair ON transactions(transfer_pair_id);
+
+            CREATE TABLE transaction_splits (
+                transaction_id TEXT NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+                component_index INTEGER NOT NULL CHECK(component_index >= 0),
+                budget_id TEXT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+                category_id TEXT NOT NULL,
+                amount_milliunits INTEGER NOT NULL CHECK(amount_milliunits != 0),
+                memo TEXT,
+                PRIMARY KEY(transaction_id, component_index),
+                FOREIGN KEY(budget_id, category_id) REFERENCES categories(budget_id, id)
+            );
+            CREATE INDEX transaction_splits_category ON transaction_splits(category_id);
+
+            ALTER TABLE budgets ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0, 1));
+            ALTER TABLE budgets ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+
+            UPDATE transactions
+               SET imported_description = (
+                    SELECT p.display_name FROM payees p
+                     WHERE p.id = transactions.payee_id AND p.budget_id = transactions.budget_id
+               )
+             WHERE source_kind = 'simplefin' AND imported_description IS NULL;
+            """)
+        }
+        migrator.registerMigration("v11-automation-rules") { db in
+            try db.execute(sql: """
+            CREATE TABLE automation_rules (
+                id TEXT PRIMARY KEY NOT NULL,
+                budget_id TEXT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+                sort_order INTEGER NOT NULL,
+                match_mode TEXT NOT NULL CHECK(match_mode IN ('all', 'any')),
+                stop_after_match INTEGER NOT NULL CHECK(stop_after_match IN (0, 1)),
+                payload BLOB NOT NULL,
+                created_at_epoch INTEGER NOT NULL,
+                updated_at_epoch INTEGER NOT NULL
+            );
+            CREATE INDEX automation_rules_budget_order ON automation_rules(budget_id, sort_order);
+            """)
+        }
+        migrator.registerMigration("v12-file-import") { db in
+            try db.execute(sql: """
+            CREATE TABLE import_batches (
+                id TEXT PRIMARY KEY NOT NULL,
+                budget_id TEXT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+                account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+                format TEXT NOT NULL CHECK(format IN ('csv', 'ofx', 'qfx')),
+                file_name TEXT NOT NULL,
+                imported_at_epoch INTEGER NOT NULL,
+                imported_count INTEGER NOT NULL CHECK(imported_count >= 0),
+                skipped_count INTEGER NOT NULL CHECK(skipped_count >= 0)
+            );
+            CREATE TABLE file_imports (
+                transaction_id TEXT PRIMARY KEY NOT NULL REFERENCES transactions(id) ON DELETE RESTRICT,
+                budget_id TEXT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+                batch_id TEXT NOT NULL REFERENCES import_batches(id) ON DELETE RESTRICT,
+                external_id TEXT,
+                fingerprint TEXT NOT NULL,
+                raw_fields BLOB NOT NULL
+            );
+            CREATE INDEX file_imports_batch ON file_imports(batch_id);
+            CREATE INDEX file_imports_external ON file_imports(budget_id, external_id);
+            CREATE INDEX file_imports_fingerprint ON file_imports(budget_id, fingerprint);
+            CREATE TABLE import_mappings (
+                id TEXT PRIMARY KEY NOT NULL,
+                budget_id TEXT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                format TEXT NOT NULL CHECK(format IN ('csv', 'ofx', 'qfx')),
+                header_fingerprint TEXT,
+                payload BLOB NOT NULL,
+                created_at_epoch INTEGER NOT NULL,
+                last_used_at_epoch INTEGER NOT NULL
+            );
+            """)
+        }
+        migrator.registerMigration("v13-reports") { db in
+            try db.execute(sql: """
+            CREATE TABLE reports (
+                id TEXT PRIMARY KEY NOT NULL,
+                budget_id TEXT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                sort_order INTEGER NOT NULL,
+                payload BLOB NOT NULL,
+                created_at_epoch INTEGER NOT NULL,
+                updated_at_epoch INTEGER NOT NULL
+            );
+            """)
+        }
+        migrator.registerMigration("v14-schedules") { db in
+            try db.execute(sql: """
+            CREATE TABLE schedules (
+                id TEXT PRIMARY KEY NOT NULL,
+                budget_id TEXT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+                account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'ended')),
+                amount_milliunits INTEGER NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT,
+                payload BLOB NOT NULL,
+                created_at_epoch INTEGER NOT NULL,
+                updated_at_epoch INTEGER NOT NULL
+            );
+            CREATE TABLE schedule_occurrences (
+                schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+                due_date TEXT NOT NULL,
+                budget_id TEXT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+                status TEXT NOT NULL CHECK(status IN ('matched', 'entered', 'skipped')),
+                transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+                resolved_at_epoch INTEGER NOT NULL,
+                match_score INTEGER,
+                PRIMARY KEY(schedule_id, due_date)
+            );
+            CREATE UNIQUE INDEX schedule_occurrences_transaction
+                ON schedule_occurrences(transaction_id) WHERE transaction_id IS NOT NULL;
+            CREATE TABLE schedule_reviews (
+                id TEXT PRIMARY KEY NOT NULL,
+                budget_id TEXT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+                schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+                due_date TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('open', 'resolved', 'dismissed')),
+                candidates BLOB NOT NULL,
+                created_at_epoch INTEGER NOT NULL,
+                resolved_at_epoch INTEGER
+            );
+            CREATE INDEX schedule_reviews_status ON schedule_reviews(budget_id, status);
+            """)
+        }
+        migrator.registerMigration("v15-app-settings") { db in
+            try db.execute(sql: """
+            CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL,
+                updated_at_epoch INTEGER NOT NULL
+            );
+            """)
+        }
+        migrator.registerMigration("v16-assistant-conversations") { db in
+            try db.execute(sql: """
+            CREATE TABLE assistant_conversations (
+                budget_id TEXT PRIMARY KEY NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+                payload BLOB NOT NULL,
+                updated_at_epoch INTEGER NOT NULL
+            );
+            """)
+        }
         return migrator
     }
 }

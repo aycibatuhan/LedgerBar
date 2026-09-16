@@ -14,6 +14,11 @@ specification; `§` references below point into it.
   the §3.10 three-month golden scenario, recurrence/overspending/refund
   rules, import classification, protocol/security boundaries, persistence,
   reconciliation.
+- `Sources/LedgerCore/{Automation,Import,Reports,Schedules,Assistant}` —
+  the financial-system extensions specified in `docs/DESIGN.md` and
+  `docs/LOCAL-AI.md`: rules, file import, reports, schedules, and the
+  local assistant. Each is a set of `BudgetWorkspace` extensions plus pure
+  engines; none writes the database directly.
 - `LedgerBar/` — app-only SwiftUI code (menu bar summary, onboarding,
   budget grid, register, Review Queue, staged-row resolution, reconciliation,
   SimpleFIN settings, backup). Consumed by both the SwiftPM executable target
@@ -21,6 +26,14 @@ specification; `§` references below point into it.
 - `project.yml` — XcodeGen source for the sandboxed/signed `.app` bundle
   (§6.2). Requires `xcodegen` exactly `2.46.0` (see
   `Tools/xcodegen-version.txt`) and full Xcode.
+
+## Schema upgrades
+
+Migrations are additive and versioned (`v1`…`v16`). Opening a pre-v10
+database first writes a verified copy next to it
+(`ledgerbar.before-v10.sqlite`) before the `transactions` mirror is rebuilt;
+delete that copy once you are satisfied with the upgrade. Restore remains
+the manual procedure in the README.
 
 ## Development database paths
 
@@ -37,6 +50,18 @@ local build required by `SPEC.md` (`LSUIElement` = true, so no Dock icon).
 `./Tools/install-local-app.sh` rebuilds it, copies it to
 `/Applications/LedgerBar.app` (or `LEDGERBAR_INSTALL_DIR`), makes only the
 installed copy Dock-visible, and re-signs it.
+
+### App icon
+
+The icon lives in `LedgerBar/Resources/Assets.xcassets/AppIcon.appiconset`
+and is generated, not hand-edited: `Design/AppIcon.svg` is the reference
+drawing and `swift Tools/render-app-icon.swift LedgerBar/Resources/Assets.xcassets`
+re-renders every macOS size with CoreGraphics. The Xcode build compiles the
+catalog (`ASSETCATALOG_COMPILER_APPICON_NAME`); the SwiftPM bundle script
+assembles `AppIcon.icns` from the same PNGs with `iconutil`. The menu-bar
+glyph is `BrandGlyph.menuBarImage`, an 18 pt template image drawn at runtime
+from the same paths so the SwiftPM build needs no asset catalog. Change the
+geometry in all three places together.
 
 ### Disposable smoke test
 

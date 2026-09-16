@@ -43,6 +43,18 @@ public struct BudgetWorkspace: Sendable, Equatable {
     public private(set) var syncConflicts: [SyncConflictID: SyncConflictRow] = [:]
     /// §4.4 post-sync balance mismatches, at most one `open` per account.
     public private(set) var snapshotDiscrepancies: [SnapshotDiscrepancyID: SnapshotDiscrepancyRow] = [:]
+    /// Budget-scoped automation rules (docs/DESIGN.md D4).
+    public private(set) var automationRules: [AutomationRuleID: AutomationRule] = [:]
+    /// File-import identity per transaction (`source_kind == .file` iff present).
+    public private(set) var fileImports: [TransactionID: FileImportRecord] = [:]
+    public private(set) var importBatches: [ImportBatchID: ImportBatchRow] = [:]
+    public private(set) var importMappings: [ImportMappingID: ImportMappingRow] = [:]
+    /// Saved report definitions (docs/DESIGN.md D7).
+    public private(set) var reports: [ReportID: ReportRow] = [:]
+    /// Schedules, their sparse occurrences, and open match reviews (D5).
+    public private(set) var schedules: [ScheduleID: Schedule] = [:]
+    public private(set) var scheduleOccurrences: [ScheduleOccurrenceKey: ScheduleOccurrence] = [:]
+    public private(set) var scheduleReviews: [ScheduleReviewID: ScheduleMatchReview] = [:]
 
     public let rtaCategoryID: CategoryID
     public let uncategorizedID: CategoryID
@@ -62,7 +74,8 @@ public struct BudgetWorkspace: Sendable, Equatable {
         timeZoneIdentifier: String,
         firstMonth: BudgetMonth,
         currentMonth: BudgetMonth,
-        nowEpoch: Int64
+        nowEpoch: Int64,
+        sortOrder: Int = 0
     ) throws -> BudgetWorkspace {
         guard firstMonth <= currentMonth else {
             throw MutationError.futureDatedTransaction
@@ -73,7 +86,8 @@ public struct BudgetWorkspace: Sendable, Equatable {
             timeZoneIdentifier: timeZoneIdentifier,
             firstMonth: firstMonth,
             lastObservedBudgetMonth: currentMonth,
-            createdAtEpoch: nowEpoch
+            createdAtEpoch: nowEpoch,
+            sortOrder: sortOrder
         )
         return try BudgetWorkspace(budget: budget)
     }
@@ -303,6 +317,9 @@ public struct BudgetWorkspace: Sendable, Equatable {
     mutating func advanceBudgetMonth(_ month: BudgetMonth) {
         budget.lastObservedBudgetMonth = month
     }
+    mutating func setBudgetName(_ name: String) { budget.name = name }
+    mutating func setBudgetSortOrder(_ order: Int) { budget.sortOrder = order }
+    mutating func setBudgetArchivedFlag(_ archived: Bool) { budget.archived = archived }
     mutating func insertReconciliationMembership(_ id: TransactionID) {
         reconciliationMembership.insert(id)
     }
@@ -324,6 +341,36 @@ public struct BudgetWorkspace: Sendable, Equatable {
     mutating func setSnapshotDiscrepancy(_ row: SnapshotDiscrepancyRow) {
         snapshotDiscrepancies[row.id] = row
     }
+    mutating func setAutomationRule(_ rule: AutomationRule) {
+        automationRules[rule.id] = rule
+    }
+    mutating func removeAutomationRule(_ id: AutomationRuleID) {
+        automationRules.removeValue(forKey: id)
+    }
+    mutating func setFileImport(_ record: FileImportRecord) {
+        fileImports[record.transactionID] = record
+    }
+    mutating func setImportBatch(_ row: ImportBatchRow) {
+        importBatches[row.id] = row
+    }
+    mutating func setImportMapping(_ row: ImportMappingRow) {
+        importMappings[row.id] = row
+    }
+    mutating func removeImportMapping(_ id: ImportMappingID) {
+        importMappings.removeValue(forKey: id)
+    }
+    mutating func setReport(_ row: ReportRow) {
+        reports[row.id] = row
+    }
+    mutating func removeReport(_ id: ReportID) {
+        reports.removeValue(forKey: id)
+    }
+    mutating func setSchedule(_ row: Schedule) { schedules[row.id] = row }
+    mutating func removeSchedule(_ id: ScheduleID) { schedules.removeValue(forKey: id) }
+    mutating func setScheduleOccurrence(_ row: ScheduleOccurrence) { scheduleOccurrences[row.key] = row }
+    mutating func removeScheduleOccurrence(_ key: ScheduleOccurrenceKey) { scheduleOccurrences.removeValue(forKey: key) }
+    mutating func setScheduleReview(_ row: ScheduleMatchReview) { scheduleReviews[row.id] = row }
+    mutating func removeScheduleReview(_ id: ScheduleReviewID) { scheduleReviews.removeValue(forKey: id) }
 
     /// Composite-identity lookup mirroring the unique
     /// `(connection_key, remote_account_id, remote_transaction_id)` constraint.
@@ -359,6 +406,14 @@ public struct BudgetWorkspace: Sendable, Equatable {
             && lhs.simpleFINImports == rhs.simpleFINImports
             && lhs.syncConflicts == rhs.syncConflicts
             && lhs.snapshotDiscrepancies == rhs.snapshotDiscrepancies
+            && lhs.automationRules == rhs.automationRules
+            && lhs.fileImports == rhs.fileImports
+            && lhs.importBatches == rhs.importBatches
+            && lhs.importMappings == rhs.importMappings
+            && lhs.reports == rhs.reports
+            && lhs.schedules == rhs.schedules
+            && lhs.scheduleOccurrences == rhs.scheduleOccurrences
+            && lhs.scheduleReviews == rhs.scheduleReviews
     }
 
     /// Runs the deterministic replay pass, persists changed posting
@@ -452,6 +507,14 @@ public struct BudgetWorkspaceSnapshot: Codable, Sendable, Equatable {
     public var simpleFINImports: [SimpleFINImportRecord]
     public var syncConflicts: [SyncConflictRow]
     public var snapshotDiscrepancies: [SnapshotDiscrepancyRow]
+    public var automationRules: [AutomationRule]
+    public var fileImports: [FileImportRecord]
+    public var importBatches: [ImportBatchRow]
+    public var importMappings: [ImportMappingRow]
+    public var reports: [ReportRow]
+    public var schedules: [Schedule]
+    public var scheduleOccurrences: [ScheduleOccurrence]
+    public var scheduleReviews: [ScheduleMatchReview]
     public var rtaCategoryID: CategoryID
     public var uncategorizedID: CategoryID
     public var systemPayees: [SystemPayee]
@@ -474,6 +537,14 @@ public struct BudgetWorkspaceSnapshot: Codable, Sendable, Equatable {
         simpleFINImports: [SimpleFINImportRecord] = [],
         syncConflicts: [SyncConflictRow] = [],
         snapshotDiscrepancies: [SnapshotDiscrepancyRow] = [],
+        automationRules: [AutomationRule] = [],
+        fileImports: [FileImportRecord] = [],
+        importBatches: [ImportBatchRow] = [],
+        importMappings: [ImportMappingRow] = [],
+        reports: [ReportRow] = [],
+        schedules: [Schedule] = [],
+        scheduleOccurrences: [ScheduleOccurrence] = [],
+        scheduleReviews: [ScheduleMatchReview] = [],
         rtaCategoryID: CategoryID,
         uncategorizedID: CategoryID,
         systemPayees: [SystemPayee],
@@ -495,6 +566,14 @@ public struct BudgetWorkspaceSnapshot: Codable, Sendable, Equatable {
         self.simpleFINImports = simpleFINImports
         self.syncConflicts = syncConflicts
         self.snapshotDiscrepancies = snapshotDiscrepancies
+        self.automationRules = automationRules
+        self.fileImports = fileImports
+        self.importBatches = importBatches
+        self.importMappings = importMappings
+        self.reports = reports
+        self.schedules = schedules
+        self.scheduleOccurrences = scheduleOccurrences
+        self.scheduleReviews = scheduleReviews
         self.rtaCategoryID = rtaCategoryID
         self.uncategorizedID = uncategorizedID
         self.systemPayees = systemPayees
@@ -512,7 +591,23 @@ public struct BudgetWorkspaceSnapshot: Codable, Sendable, Equatable {
         self.categories = try container.decode([CategoryRow].self, forKey: .categories)
         self.payees = try container.decode([PayeeRow].self, forKey: .payees)
         self.allocations = try container.decode([AllocationRow].self, forKey: .allocations)
-        self.transactions = try container.decode([TransactionRow].self, forKey: .transactions)
+        var decodedTransactions = try container.decode([TransactionRow].self, forKey: .transactions)
+        // Backfill (D4.2): rows imported before `importedDescription` existed
+        // take their payee display name, which was initialized from the raw
+        // provider string. Deterministic, so repeated loads agree.
+        let payeeDisplayNames = Dictionary(
+            self.payees.map { ($0.id, $0.displayName) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for index in decodedTransactions.indices
+        where decodedTransactions[index].sourceKind == .simplefin
+            && decodedTransactions[index].importedDescription == nil {
+            if let payeeID = decodedTransactions[index].payeeID,
+               let display = payeeDisplayNames[payeeID] {
+                decodedTransactions[index].importedDescription = display
+            }
+        }
+        self.transactions = decodedTransactions
         self.transferPairs = try container.decode([TransferPairRow].self, forKey: .transferPairs)
         self.legSnapshots = try container.decode([LegSnapshotGroup].self, forKey: .legSnapshots)
         self.closedMonths = try container.decode([ClosedMonthRow].self, forKey: .closedMonths)
@@ -522,6 +617,14 @@ public struct BudgetWorkspaceSnapshot: Codable, Sendable, Equatable {
         self.simpleFINImports = try container.decodeIfPresent([SimpleFINImportRecord].self, forKey: .simpleFINImports) ?? []
         self.syncConflicts = try container.decodeIfPresent([SyncConflictRow].self, forKey: .syncConflicts) ?? []
         self.snapshotDiscrepancies = try container.decodeIfPresent([SnapshotDiscrepancyRow].self, forKey: .snapshotDiscrepancies) ?? []
+        self.automationRules = try container.decodeIfPresent([AutomationRule].self, forKey: .automationRules) ?? []
+        self.fileImports = try container.decodeIfPresent([FileImportRecord].self, forKey: .fileImports) ?? []
+        self.importBatches = try container.decodeIfPresent([ImportBatchRow].self, forKey: .importBatches) ?? []
+        self.importMappings = try container.decodeIfPresent([ImportMappingRow].self, forKey: .importMappings) ?? []
+        self.reports = try container.decodeIfPresent([ReportRow].self, forKey: .reports) ?? []
+        self.schedules = try container.decodeIfPresent([Schedule].self, forKey: .schedules) ?? []
+        self.scheduleOccurrences = try container.decodeIfPresent([ScheduleOccurrence].self, forKey: .scheduleOccurrences) ?? []
+        self.scheduleReviews = try container.decodeIfPresent([ScheduleMatchReview].self, forKey: .scheduleReviews) ?? []
         self.rtaCategoryID = try container.decode(CategoryID.self, forKey: .rtaCategoryID)
         self.uncategorizedID = try container.decode(CategoryID.self, forKey: .uncategorizedID)
         self.systemPayees = try container.decode([SystemPayee].self, forKey: .systemPayees)
@@ -557,6 +660,14 @@ extension BudgetWorkspace {
             simpleFINImports: simpleFINImports.values.sorted { $0.id < $1.id },
             syncConflicts: syncConflicts.values.sorted { $0.id < $1.id },
             snapshotDiscrepancies: snapshotDiscrepancies.values.sorted { $0.id < $1.id },
+            automationRules: automationRules.values.sorted { ($0.sortOrder, $0.id) < ($1.sortOrder, $1.id) },
+            fileImports: fileImports.values.sorted { $0.transactionID < $1.transactionID },
+            importBatches: importBatches.values.sorted { $0.id < $1.id },
+            importMappings: importMappings.values.sorted { $0.id < $1.id },
+            reports: reports.values.sorted { ($0.sortOrder, $0.id) < ($1.sortOrder, $1.id) },
+            schedules: schedules.values.sorted { $0.id < $1.id },
+            scheduleOccurrences: scheduleOccurrences.values.sorted { ($0.scheduleID, $0.dueDate) < ($1.scheduleID, $1.dueDate) },
+            scheduleReviews: scheduleReviews.values.sorted { $0.id < $1.id },
             rtaCategoryID: rtaCategoryID,
             uncategorizedID: uncategorizedID,
             systemPayees: systemPayeeIDs.keys.sorted { $0.rawValue < $1.rawValue }.compactMap {
@@ -678,6 +789,12 @@ extension BudgetWorkspace {
             if let refundID = transaction.refundOfTransactionID {
                 try require(transactions[refundID]?.budgetID == budgetID)
             }
+            if let splits = transaction.splits {
+                try require(splits.count >= 2)
+                for component in splits {
+                    try require(categories[component.categoryID]?.budgetID == budgetID)
+                }
+            }
             try requireStageMetadata(transaction.stageMetadata)
         }
 
@@ -786,6 +903,77 @@ extension BudgetWorkspace {
         let importRows = try Self.uniqueDictionary(snapshot.simpleFINImports.map { ($0.transactionID, $0) })
         let conflictRows = try Self.uniqueDictionary(snapshot.syncConflicts.map { ($0.id, $0) })
         let discrepancyRows = try Self.uniqueDictionary(snapshot.snapshotDiscrepancies.map { ($0.id, $0) })
+        let ruleRows = try Self.uniqueDictionary(snapshot.automationRules.map { ($0.id, $0) })
+        let fileImportRows = try Self.uniqueDictionary(snapshot.fileImports.map { ($0.transactionID, $0) })
+        let batchRows = try Self.uniqueDictionary(snapshot.importBatches.map { ($0.id, $0) })
+        let mappingRows = try Self.uniqueDictionary(snapshot.importMappings.map { ($0.id, $0) })
+        for record in fileImportRows.values {
+            guard record.budgetID == snapshot.budget.id,
+                  transactionRows[record.transactionID]?.sourceKind == .file,
+                  batchRows[record.batchID] != nil else { throw LedgerPersistenceError.invalidSnapshot }
+        }
+        for row in transactionRows.values where row.sourceKind == .file && fileImportRows[row.id] == nil {
+            throw LedgerPersistenceError.invalidSnapshot
+        }
+        for batch in batchRows.values {
+            guard batch.budgetID == snapshot.budget.id, accountRows[batch.accountID] != nil else {
+                throw LedgerPersistenceError.invalidSnapshot
+            }
+        }
+        for mapping in mappingRows.values where mapping.budgetID != snapshot.budget.id {
+            throw LedgerPersistenceError.invalidSnapshot
+        }
+        let reportRows = try Self.uniqueDictionary(snapshot.reports.map { ($0.id, $0) })
+        for report in reportRows.values where report.budgetID != snapshot.budget.id {
+            throw LedgerPersistenceError.invalidSnapshot
+        }
+        let scheduleRows = try Self.uniqueDictionary(snapshot.schedules.map { ($0.id, $0) })
+        for schedule in scheduleRows.values {
+            guard schedule.budgetID == snapshot.budget.id, accountRows[schedule.accountID] != nil else {
+                throw LedgerPersistenceError.invalidSnapshot
+            }
+            if let category = schedule.categoryID, categoryRows[category] == nil { throw LedgerPersistenceError.invalidSnapshot }
+            if let target = schedule.transferToAccountID, accountRows[target] == nil { throw LedgerPersistenceError.invalidSnapshot }
+        }
+        let occurrenceRows = try Self.uniqueDictionary(snapshot.scheduleOccurrences.map { ($0.key, $0) })
+        var occurrenceTransactionIDs = Set<TransactionID>()
+        for occurrence in occurrenceRows.values {
+            guard scheduleRows[occurrence.scheduleID] != nil else { throw LedgerPersistenceError.invalidSnapshot }
+            if let transactionID = occurrence.transactionID {
+                guard transactionRows[transactionID] != nil, occurrenceTransactionIDs.insert(transactionID).inserted else {
+                    throw LedgerPersistenceError.invalidSnapshot
+                }
+            }
+        }
+        let reviewRows = try Self.uniqueDictionary(snapshot.scheduleReviews.map { ($0.id, $0) })
+        for review in reviewRows.values {
+            guard review.budgetID == snapshot.budget.id, scheduleRows[review.scheduleID] != nil else {
+                throw LedgerPersistenceError.invalidSnapshot
+            }
+        }
+        for rule in ruleRows.values {
+            guard rule.budgetID == snapshot.budget.id else { throw LedgerPersistenceError.invalidSnapshot }
+            for condition in rule.conditions {
+                switch condition {
+                case .account(let id):
+                    guard accountRows[id] != nil else { throw LedgerPersistenceError.invalidSnapshot }
+                case .category(let id?):
+                    guard categoryRows[id] != nil else { throw LedgerPersistenceError.invalidSnapshot }
+                default: break
+                }
+            }
+            for action in rule.actions {
+                switch action {
+                case .setCategory(let id):
+                    guard categoryRows[id] != nil else { throw LedgerPersistenceError.invalidSnapshot }
+                case .split(let specs):
+                    for spec in specs where categoryRows[spec.categoryID] == nil {
+                        throw LedgerPersistenceError.invalidSnapshot
+                    }
+                default: break
+                }
+            }
+        }
         let systemRows = try Self.uniqueDictionary(snapshot.systemPayees.map { ($0.kind, $0.id) })
         let requiredSystemKinds: [PayeeSystemKind] = [
             .openingBalance, .transfer, .reconciliationAdjustment, .cardDebtAdjustment, .unknown
@@ -832,6 +1020,14 @@ extension BudgetWorkspace {
         self.simpleFINImports = importRows
         self.syncConflicts = conflictRows
         self.snapshotDiscrepancies = discrepancyRows
+        self.automationRules = ruleRows
+        self.fileImports = fileImportRows
+        self.importBatches = batchRows
+        self.importMappings = mappingRows
+        self.reports = reportRows
+        self.schedules = scheduleRows
+        self.scheduleOccurrences = occurrenceRows
+        self.scheduleReviews = reviewRows
         self.rtaCategoryID = snapshot.rtaCategoryID
         self.uncategorizedID = snapshot.uncategorizedID
         self.systemPayeeIDs = systemRows

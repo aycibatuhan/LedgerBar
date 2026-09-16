@@ -18,13 +18,19 @@ struct ReviewQueueView: View {
             .sorted { ($0.createdAtEpoch, $0.id) < ($1.createdAtEpoch, $1.id) }
     }
 
+    private var openScheduleReviews: [ScheduleMatchReview] {
+        (model.snapshot?.scheduleReviews ?? [])
+            .filter { $0.status == .open }
+            .sorted { ($0.dueDate, $0.id) < ($1.dueDate, $1.id) }
+    }
+
     var body: some View {
         Group {
-            if openDiscrepancies.isEmpty && openConflicts.isEmpty {
+            if openDiscrepancies.isEmpty && openConflicts.isEmpty && openScheduleReviews.isEmpty {
                 ContentUnavailableView(
                     "No open reviews",
                     systemImage: "checkmark.seal",
-                    description: Text("New snapshot discrepancies and sync conflicts will appear here after SimpleFIN sync.")
+                    description: Text("Snapshot discrepancies, sync conflicts, and ambiguous schedule matches appear here after imports.")
                 )
             } else {
                 ScrollView {
@@ -47,6 +53,16 @@ struct ReviewQueueView: View {
                             )
                             ForEach(openConflicts) { conflict in
                                 SyncConflictCard(conflict: conflict)
+                            }
+                        }
+                        if !openScheduleReviews.isEmpty {
+                            SectionHeader(
+                                title: "Schedule matches",
+                                count: openScheduleReviews.count,
+                                systemImage: "calendar.badge.exclamationmark"
+                            )
+                            ForEach(openScheduleReviews) { review in
+                                ScheduleReviewCard(review: review)
                             }
                         }
                     }

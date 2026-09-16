@@ -19,9 +19,11 @@ struct LedgerBarApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("LedgerBar", systemImage: "chart.pie.fill") {
+        MenuBarExtra {
             MenuBarSummaryView()
                 .environment(model)
+        } label: {
+            Image(nsImage: BrandGlyph.menuBarImage)
         }
         .menuBarExtraStyle(.window)
 

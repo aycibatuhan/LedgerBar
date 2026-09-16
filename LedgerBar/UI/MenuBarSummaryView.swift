@@ -14,8 +14,15 @@ struct MenuBarSummaryView: View {
             if let snapshot = model.snapshot,
                let month = model.projection?.month(snapshot.budget.lastObservedBudgetMonth) {
                 let currency = snapshot.budget.currency
-                Text(MoneyFormatting.monthTitle(month.month))
-                    .font(.headline)
+                HStack {
+                    Text(MoneyFormatting.monthTitle(month.month))
+                        .font(.headline)
+                    Spacer()
+                    Text(snapshot.budget.name)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
                     summaryRow("Ready to Assign", month.rtaEnd, currency, emphasize: true)
                     summaryRow("Assigned", month.totalAssigned, currency)

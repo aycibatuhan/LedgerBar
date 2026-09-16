@@ -121,6 +121,8 @@ public struct MonthSnapshot: Sendable, Equatable, Codable {
 /// category)` scope (§3.5.3). Derived in-memory state, never a stored column.
 public struct PurchaseLot: Sendable, Equatable, Codable {
     public var purchaseID: TransactionID
+    /// Component of a split purchase this lot belongs to (0 when unsplit).
+    public var componentIndex: Int
     public var cardAccountID: AccountID
     public var remainingRefundable: Milliunits
     public var remainingFunded: Milliunits
@@ -130,8 +132,29 @@ public struct PurchaseLot: Sendable, Equatable, Codable {
 /// classify linked refunds (`crossMonthRefund` vs `missingRefundOrigin`).
 public struct PurchaseInfo: Sendable, Equatable, Codable {
     public var month: BudgetMonth
+    /// The purchase's category, or component 0's category when split.
     public var categoryID: CategoryID
     public var cardAccountID: AccountID
+    /// Per-component categories for a split purchase; nil when unsplit.
+    public var componentCategoryIDs: [CategoryID]?
+
+    public init(month: BudgetMonth, categoryID: CategoryID, cardAccountID: AccountID, componentCategoryIDs: [CategoryID]? = nil) {
+        self.month = month
+        self.categoryID = categoryID
+        self.cardAccountID = cardAccountID
+        self.componentCategoryIDs = componentCategoryIDs
+    }
+
+    /// Resolves the category a refund of `componentIndex` targets. A split
+    /// origin requires an in-range component index; an unsplit origin
+    /// requires none (D3.3).
+    public func refundCategory(componentIndex: Int?) -> CategoryID? {
+        if let components = componentCategoryIDs {
+            guard let index = componentIndex, components.indices.contains(index) else { return nil }
+            return components[index]
+        }
+        return componentIndex == nil ? categoryID : nil
+    }
 }
 
 /// State at the START of a month, before that month's allocations. Captured

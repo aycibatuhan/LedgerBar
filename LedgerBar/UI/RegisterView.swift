@@ -21,6 +21,7 @@ struct RegisterView: View {
     @State private var search = ""
     @State private var selection = Set<TransactionID>()
     @State private var showAdd = false
+    @State private var showImport = false
     @State private var showReconcile = false
     @State private var categorizeTarget: TransactionID?
     @State private var reimbursementTarget: TransactionID?
@@ -28,6 +29,7 @@ struct RegisterView: View {
     @State private var unpairedTarget: TransactionID?
     @State private var editTarget: TransactionID?
     @State private var deleteTarget: TransactionID?
+    @State private var splitTarget: TransactionID?
 
     struct Entry: Identifiable {
         var row: TransactionRow
@@ -82,6 +84,7 @@ struct RegisterView: View {
         .navigationTitle(accountID.map { model.accountName($0) } ?? "All Accounts")
         .toolbar { toolbarContent }
         .sheet(isPresented: $showAdd) { AddTransactionSheet(preselectedAccountID: accountID) }
+        .sheet(isPresented: $showImport) { ImportSheet(preselectedAccountID: accountID) }
         .sheet(isPresented: $showReconcile) {
             if let accountID { ReconcileSheet(accountID: accountID) }
         }
@@ -99,6 +102,9 @@ struct RegisterView: View {
         }
         .sheet(item: $editTarget) { id in
             EditTransactionSheet(transactionID: id)
+        }
+        .sheet(item: $splitTarget) { id in
+            SplitTransactionSheet(transactionID: id)
         }
         .confirmationDialog(
             "Delete this transaction?",
@@ -172,6 +178,11 @@ struct RegisterView: View {
     private func categoryCell(_ entry: Entry) -> some View {
         if entry.row.transferPairID != nil {
             Label("Transfer", systemImage: "arrow.left.arrow.right").foregroundStyle(.secondary)
+        } else if let splits = entry.row.splits {
+            Label("Split · \(splits.count)", systemImage: "square.split.2x1")
+                .foregroundStyle(entry.row.postingState == .needsCategory ? Color.orange : Color.primary)
+                .help(splitSummary(splits, currency: entry.currency))
+                .accessibilityLabel("Split across \(splits.count) categories: \(splitSummary(splits, currency: entry.currency))")
         } else if entry.row.postingState == .staged {
             Text("—").foregroundStyle(.secondary)
         } else if entry.categoryName.isEmpty {
@@ -207,8 +218,27 @@ struct RegisterView: View {
                     .padding(.horizontal, 4)
                     .background(Capsule().fill(.yellow.opacity(0.3)))
             }
+            if let occurrence = scheduleOccurrence(entry.row.id) {
+                Image(systemName: "calendar.badge.checkmark")
+                    .foregroundStyle(.blue)
+                    .help("Matches the scheduled \(scheduleName(occurrence.scheduleID)) due \(occurrence.dueDate.description)")
+                    .accessibilityLabel("Scheduled: \(scheduleName(occurrence.scheduleID))")
+            }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    private func scheduleOccurrence(_ id: TransactionID) -> ScheduleOccurrence? {
+        model.snapshot?.scheduleOccurrences.first { $0.transactionID == id }
+    }
+
+    private func scheduleName(_ id: ScheduleID) -> String {
+        model.snapshot?.schedules.first { $0.id == id }?.name ?? "schedule"
+    }
+
+    private func splitSummary(_ splits: [SplitComponent], currency: String) -> String {
+        splits.map { "\(model.categoryName($0.categoryID)) \(MoneyFormatting.string($0.amountMilliunits, currency: currency))" }
+            .joined(separator: ", ")
     }
 
     private func clearedLabel(_ state: ClearedState) -> String {
@@ -254,6 +284,14 @@ struct RegisterView: View {
             }
             .accessibilityIdentifier("ledgerbar.add-transaction")
 
+            Button {
+                showImport = true
+            } label: {
+                Label("Import File", systemImage: "square.and.arrow.down")
+            }
+            .help("Import a CSV, OFX, or QFX export into an account after a duplicate check and preview.")
+            .accessibilityIdentifier("ledgerbar.import-file")
+
             if selection.count == 2 {
                 Button {
                     let ids = Array(selection)
@@ -289,6 +327,16 @@ struct RegisterView: View {
 
     @ViewBuilder
     private func contextMenu(for ids: Set<TransactionID>) -> some View {
+        if !ids.isEmpty, model.assistantSettings.enabled {
+            Button("Ask LedgerBar About This…") {
+                let rows = ids.compactMap(transaction).sorted { $0.date < $1.date }
+                let payees = Set(rows.compactMap { model.payeeName($0.payeeID) }).sorted()
+                model.assistantPrefill = rows.count == 1
+                    ? "Tell me about \(payees.first ?? "this transaction") — have I paid them before, what category do I usually use, and is \(MoneyFormatting.string(rows[0].amountMilliunits, currency: model.budgetCurrency)) typical?"
+                    : "Summarize these \(rows.count) transactions from \(payees.prefix(3).joined(separator: ", ")) and tell me if anything looks unusual."
+            }
+            Divider()
+        }
         if ids.count == 1, let id = ids.first, let row = transaction(id) {
             singleRowMenu(id: id, row: row)
         } else if ids.count == 2 {
@@ -306,6 +354,16 @@ struct RegisterView: View {
     @ViewBuilder
     private func singleRowMenu(id: TransactionID, row: TransactionRow) -> some View {
         let now = Int64(Date().timeIntervalSince1970.rounded())
+        if let applied = lastRuleApplication(id) {
+            Text("Changed by rule: \(applied)")
+            Divider()
+        }
+        if let occurrence = scheduleOccurrence(id) {
+            Button("Unlink from Schedule “\(scheduleName(occurrence.scheduleID))”") {
+                Task { await model.perform { try $0.unmatchOccurrence(scheduleID: occurrence.scheduleID, dueDate: occurrence.dueDate, nowEpoch: now) } }
+            }
+            Divider()
+        }
         if row.sourceKind != .system, row.postingState != .voided {
             Button("Edit Transaction…") { editTarget = id }
                 .disabled(row.cleared == .reconciled)
@@ -313,7 +371,12 @@ struct RegisterView: View {
         }
         if row.postingState == .posted || row.postingState == .needsCategory {
             if row.transferPairID == nil && (row.kind == .normal || row.kind == .refund) {
-                Button("Categorize…") { categorizeTarget = id }
+                Button(row.isSplit ? "Categorize (Remove Split)…" : "Categorize…") { categorizeTarget = id }
+            }
+            if row.transferPairID == nil, row.kind == .normal, row.amountMilliunits < 0,
+               row.sourceKind != .system, isBudgetEligibleAccount(row.accountID) {
+                Button(row.isSplit ? "Edit Split…" : "Split…") { splitTarget = id }
+                    .help("Allocate this outflow across several categories. The bank transaction stays one row.")
             }
             if row.kind == .normal, row.amountMilliunits > 0, row.transferPairID == nil,
                isCashAccount(row.accountID) {
@@ -401,6 +464,18 @@ struct RegisterView: View {
         guard let account = model.snapshot?.accounts.first(where: { $0.id == row.accountID }) else { return false }
         let eligible = account.onBudget && account.currency == model.budgetCurrency
         return !eligible || (row.amountMilliunits > 0 && account.type != .creditCard)
+    }
+
+    /// "Why did this change?" — the most recent rule application audit entry.
+    private func lastRuleApplication(_ id: TransactionID) -> String? {
+        model.snapshot?.auditEvents.last {
+            $0.entityType == "transaction" && $0.entityID == id.description && $0.eventKind == "ruleApplied"
+        }?.metadata["ruleNames"]
+    }
+
+    private func isBudgetEligibleAccount(_ id: AccountID) -> Bool {
+        guard let account = model.snapshot?.accounts.first(where: { $0.id == id }) else { return false }
+        return account.onBudget && account.currency == model.budgetCurrency && !account.closed
     }
 
     private func isCashAccount(_ id: AccountID) -> Bool {

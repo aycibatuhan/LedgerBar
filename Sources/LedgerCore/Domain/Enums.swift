@@ -44,6 +44,9 @@ public enum SourceKind: String, Sendable, Codable {
     case manual
     case simplefin
     case system
+    /// Imported from a user-supplied file (CSV/OFX/QFX); carries a
+    /// `FileImportRecord` identity like `simplefin` carries an import record.
+    case file
 }
 
 public enum ClearedState: String, Sendable, Codable {
@@ -84,7 +87,7 @@ public enum TransferPairStatus: String, Sendable, Codable {
     case voided
 }
 
-public enum FlagColor: String, Sendable, Codable {
+public enum FlagColor: String, Sendable, Codable, CaseIterable {
     case red, orange, yellow, green, blue, purple
 }
 

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- LedgerBar "LB monogram": an L and a B built from ledger-like strokes.
+     Reference drawing for Tools/render-app-icon.swift (1024-point grid). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A374C"/>
+      <stop offset="1" stop-color="#192230"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#plate)"/>
+  <rect x="456" y="296" width="196" height="104" rx="22" fill="#A9C0DA"/>
+  <path d="M456 508 H588 C634 508 672 546 672 592 C672 638 634 676 588 676 H560"
+        fill="none" stroke="#A9C0DA" stroke-width="104" stroke-linejoin="round"/>
+  <path d="M352 296 V676 H584" fill="none" stroke="#F3F6F9" stroke-width="104" stroke-linejoin="round"/>
+</svg>

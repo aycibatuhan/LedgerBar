@@ -634,7 +634,20 @@ extension AppModel {
         snapshot?.snapshotDiscrepancies.filter { $0.status == .open }.count ?? 0
     }
 
+    var openScheduleReviewCount: Int {
+        snapshot?.scheduleReviews.filter { $0.status == .open }.count ?? 0
+    }
+
     var openReviewCount: Int {
-        openSyncConflictCount + openSnapshotDiscrepancyCount
+        openSyncConflictCount + openSnapshotDiscrepancyCount + openScheduleReviewCount
+    }
+
+    /// Expected occurrences whose match window has fully passed (D5.5).
+    var overdueScheduleCount: Int {
+        guard let snapshot, !snapshot.schedules.isEmpty,
+              let workspace = try? BudgetWorkspace(snapshot: snapshot),
+              let calendar = try? BudgetCalendar(timeZoneIdentifier: snapshot.budget.timeZoneIdentifier),
+              let today = calendar.budgetDate(fromEpoch: nowEpoch) else { return 0 }
+        return workspace.expectedOccurrences(in: RecurrenceEngine.adding(days: -400, to: today)...today, asOf: today).filter(\.isOverdue).count
     }
 }

@@ -45,6 +45,12 @@ public enum SimpleFINImportTag: Sendable {}
 public enum SyncConflictTag: Sendable {}
 public enum SnapshotDiscrepancyTag: Sendable {}
 public enum SyncRequestLogTag: Sendable {}
+public enum AutomationRuleTag: Sendable {}
+public enum ScheduleTag: Sendable {}
+public enum ScheduleReviewTag: Sendable {}
+public enum ImportBatchTag: Sendable {}
+public enum ImportMappingTag: Sendable {}
+public enum ReportTag: Sendable {}
 
 public typealias BudgetID = EntityID<BudgetTag>
 public typealias AccountID = EntityID<AccountTag>
@@ -59,3 +65,9 @@ public typealias SimpleFINImportID = EntityID<SimpleFINImportTag>
 public typealias SyncConflictID = EntityID<SyncConflictTag>
 public typealias SnapshotDiscrepancyID = EntityID<SnapshotDiscrepancyTag>
 public typealias SyncRequestLogID = EntityID<SyncRequestLogTag>
+public typealias AutomationRuleID = EntityID<AutomationRuleTag>
+public typealias ScheduleID = EntityID<ScheduleTag>
+public typealias ScheduleReviewID = EntityID<ScheduleReviewTag>
+public typealias ImportBatchID = EntityID<ImportBatchTag>
+public typealias ImportMappingID = EntityID<ImportMappingTag>
+public typealias ReportID = EntityID<ReportTag>

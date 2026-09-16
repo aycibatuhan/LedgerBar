@@ -14,6 +14,10 @@ public struct BudgetRow: Sendable, Equatable, Identifiable, Codable {
     public var nextLocalSourceSequence: Int64
     public var createdAtEpoch: Int64
     public var revision: Int64
+    /// Archived budgets are hidden from the switcher but fully retained.
+    public var archived: Bool
+    /// Display order in the budget switcher.
+    public var sortOrder: Int
 
     public init(
         id: BudgetID = BudgetID(),
@@ -24,7 +28,9 @@ public struct BudgetRow: Sendable, Equatable, Identifiable, Codable {
         lastObservedBudgetMonth: BudgetMonth? = nil,
         nextLocalSourceSequence: Int64 = 0,
         createdAtEpoch: Int64 = 0,
-        revision: Int64 = 0
+        revision: Int64 = 0,
+        archived: Bool = false,
+        sortOrder: Int = 0
     ) {
         self.id = id
         self.name = name
@@ -35,6 +41,30 @@ public struct BudgetRow: Sendable, Equatable, Identifiable, Codable {
         self.nextLocalSourceSequence = nextLocalSourceSequence
         self.createdAtEpoch = createdAtEpoch
         self.revision = revision
+        self.archived = archived
+        self.sortOrder = sortOrder
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, currency, timeZoneIdentifier, firstMonth, lastObservedBudgetMonth
+        case nextLocalSourceSequence, createdAtEpoch, revision, archived, sortOrder
+    }
+
+    /// Snapshots written before multiple budgets existed have no
+    /// `archived`/`sortOrder`; they decode as an active budget at position 0.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(BudgetID.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.currency = try c.decode(String.self, forKey: .currency)
+        self.timeZoneIdentifier = try c.decode(String.self, forKey: .timeZoneIdentifier)
+        self.firstMonth = try c.decode(BudgetMonth.self, forKey: .firstMonth)
+        self.lastObservedBudgetMonth = try c.decode(BudgetMonth.self, forKey: .lastObservedBudgetMonth)
+        self.nextLocalSourceSequence = try c.decode(Int64.self, forKey: .nextLocalSourceSequence)
+        self.createdAtEpoch = try c.decode(Int64.self, forKey: .createdAtEpoch)
+        self.revision = try c.decode(Int64.self, forKey: .revision)
+        self.archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
+        self.sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
     }
 }
 
@@ -219,6 +249,21 @@ public struct StageMetadata: Sendable, Equatable, Codable {
     }
 }
 
+/// One allocation of a split transaction (D3). Components carry the parent's
+/// sign, are nonzero, and sum exactly to the parent amount; they are pure
+/// category allocation and never bank identity.
+public struct SplitComponent: Sendable, Equatable, Codable, Hashable {
+    public var categoryID: CategoryID
+    public var amountMilliunits: Milliunits
+    public var memo: String?
+
+    public init(categoryID: CategoryID, amountMilliunits: Milliunits, memo: String? = nil) {
+        self.categoryID = categoryID
+        self.amountMilliunits = amountMilliunits
+        self.memo = memo
+    }
+}
+
 public struct TransactionRow: Sendable, Equatable, Identifiable, Codable {
     public var id: TransactionID
     public var budgetID: BudgetID
@@ -243,6 +288,14 @@ public struct TransactionRow: Sendable, Equatable, Identifiable, Codable {
     public var transferPairID: TransferPairID?
     public var refundOfTransactionID: TransactionID?
     public var kind: TransactionKind
+    /// Non-nil only for a split row: the parent's `categoryID` is nil and the
+    /// components own the category allocation (D3).
+    public var splits: [SplitComponent]?
+    /// The provider/file payee text exactly as imported; immutable and
+    /// distinct from the editable `payeeID`. Nil for manual and system rows.
+    public var importedDescription: String?
+    /// For a linked refund whose origin is split: the component it refunds.
+    public var refundOfComponentIndex: Int?
 
     public init(
         id: TransactionID = TransactionID(),
@@ -265,7 +318,10 @@ public struct TransactionRow: Sendable, Equatable, Identifiable, Codable {
         categoryID: CategoryID? = nil,
         transferPairID: TransferPairID? = nil,
         refundOfTransactionID: TransactionID? = nil,
-        kind: TransactionKind = .normal
+        kind: TransactionKind = .normal,
+        splits: [SplitComponent]? = nil,
+        importedDescription: String? = nil,
+        refundOfComponentIndex: Int? = nil
     ) {
         self.id = id
         self.budgetID = budgetID
@@ -288,7 +344,13 @@ public struct TransactionRow: Sendable, Equatable, Identifiable, Codable {
         self.transferPairID = transferPairID
         self.refundOfTransactionID = refundOfTransactionID
         self.kind = kind
+        self.splits = splits
+        self.importedDescription = importedDescription
+        self.refundOfComponentIndex = refundOfComponentIndex
     }
+
+    /// True when the row is split across components.
+    public var isSplit: Bool { splits != nil }
 }
 
 public struct TransferPairRow: Sendable, Equatable, Identifiable, Codable {
@@ -484,7 +546,7 @@ extension TransactionRow {
             guard let value else { return "nil" }
             return "\(value.utf8.count):\(value)"
         }
-        return [
+        var parts = [
             "account=\(accountID.description)",
             "date=\(date.description)",
             "effective=\(effectiveAtEpoch.map(String.init) ?? "nil")",
@@ -500,6 +562,17 @@ extension TransactionRow {
             "memo=\(text(memo))",
             "cleared=\(cleared.rawValue)",
             "approved=\(approved)"
-        ].joined(separator: "|")
+        ]
+        // Split/component segments are appended only when present so every
+        // fingerprint stored before splits existed remains byte-identical.
+        if let splits {
+            parts.append("splits=" + splits.map {
+                "\($0.categoryID.description):\($0.amountMilliunits):\(text($0.memo))"
+            }.joined(separator: ","))
+        }
+        if let refundOfComponentIndex {
+            parts.append("refundComponent=\(refundOfComponentIndex)")
+        }
+        return parts.joined(separator: "|")
     }
 }

@@ -469,7 +469,7 @@ extension BudgetWorkspace {
               manual.budgetID == budget.id,
               imported.budgetID == budget.id,
               record.budgetID == budget.id,
-              manual.sourceKind == .manual,
+              manual.sourceKind == .manual || manual.sourceKind == .file,
               imported.sourceKind == .simplefin,
               simpleFINImports[manual.id] == nil,
               simpleFINImports[imported.id]?.id == record.id,

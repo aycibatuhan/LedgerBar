@@ -4,6 +4,10 @@ import SwiftUI
 enum SidebarItem: Hashable {
     case budget
     case review
+    case rules
+    case reports
+    case schedules
+    case assistant
     case allAccounts
     case account(AccountID)
 }
@@ -18,6 +22,7 @@ struct MainWindowView: View {
     @State private var renameAccountTarget: AccountRow?
     @State private var closeAccountTarget: AccountRow?
     @State private var voidCloseTarget: AccountRow?
+    @State private var showManageBudgets = false
     @AppStorage("ledgerbar.showClosedAccounts") private var showClosedAccounts = false
 
     var body: some View {
@@ -68,6 +73,10 @@ struct MainWindowView: View {
         NavigationSplitView {
             List(selection: $selection) {
                 Section {
+                    BudgetSwitcherMenu(showManage: $showManageBudgets)
+                        .menuStyle(.borderlessButton)
+                }
+                Section {
                     Label("Budget", systemImage: "chart.pie")
                         .tag(SidebarItem.budget)
                     Label("Review Queue", systemImage: "checklist")
@@ -76,6 +85,20 @@ struct MainWindowView: View {
                     Label("All Accounts", systemImage: "list.bullet.rectangle")
                         .badge(model.needsCategoryCount + model.stagedCount)
                         .tag(SidebarItem.allAccounts)
+                }
+                Section("Insights") {
+                    Label("Reports", systemImage: "chart.bar.xaxis")
+                        .tag(SidebarItem.reports)
+                    Label("Schedules", systemImage: "calendar.badge.clock")
+                        .badge(model.overdueScheduleCount)
+                        .tag(SidebarItem.schedules)
+                    Label("Ask LedgerBar", systemImage: "sparkles")
+                        .tag(SidebarItem.assistant)
+                }
+                Section("Automation") {
+                    Label("Rules", systemImage: "wand.and.stars")
+                        .badge(model.snapshot?.automationRules.count ?? 0)
+                        .tag(SidebarItem.rules)
                 }
                 Section("Accounts") {
                     ForEach(sortedAccounts, id: \.id) { account in
@@ -112,6 +135,14 @@ struct MainWindowView: View {
                 BudgetGridView()
             case .review:
                 ReviewQueueView()
+            case .rules:
+                RulesView()
+            case .reports:
+                ReportsView()
+            case .schedules:
+                SchedulesView()
+            case .assistant:
+                AssistantView()
             case .allAccounts:
                 RegisterView(accountID: nil)
             case .account(let id):
@@ -120,6 +151,12 @@ struct MainWindowView: View {
         }
         .sheet(isPresented: $showAddAccount) {
             AddAccountSheet()
+        }
+        .sheet(isPresented: $showManageBudgets) {
+            ManageBudgetsSheet()
+        }
+        .onChange(of: model.assistantPrefill) { _, prefill in
+            if prefill != nil { selection = .assistant }
         }
         .sheet(item: $renameAccountTarget) { account in
             RenameAccountSheet(account: account)

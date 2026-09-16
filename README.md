@@ -45,6 +45,33 @@ LedgerBar server, no cloud.
   adjustment, and undo for the most recent reconciliation.
 - **Verified backups** — a consistent SQLite snapshot, integrity-checked
   before it is written to the destination you choose.
+- **Split transactions** — allocate one purchase across several categories.
+  The bank row stays one row; only its budget allocation changes, and
+  card refunds can target a single component.
+- **Rules** — deterministic automation that renames payees, categorizes,
+  annotates, flags, or splits imported transactions as they arrive, with
+  a preview before any retroactive run and an audit note on every change.
+  The bank's original description is always kept.
+- **File import** — CSV (with a saved column mapping), OFX, and QFX
+  exports, run through the same review as bank sync: certain duplicates
+  are skipped, near matches are shown for you to decide, nothing merges.
+- **Reports** — spending by category, group, payee, or account; spending
+  over time; income vs spending; net worth; budget vs actual — with
+  explicit accounting semantics, period comparison, saved definitions,
+  and the transactions behind every number.
+- **Schedules** — expected bills, income, and card payments. Imports are
+  matched to them (ambiguous cases go to the Review Queue), overdue
+  expectations stay visible, and projected balances are labeled as such.
+  Nothing is entered automatically.
+- **Multiple budgets** — independent budgets in one database (personal,
+  household, sandbox) with a switcher, archive, export/import, and
+  nothing shared between them.
+- **Ask LedgerBar** *(optional, local-only)* — natural-language questions
+  answered from the ledger through a fixed set of typed tools. Works with
+  a local model server on this Mac (Ollama or any OpenAI-compatible server
+  on 127.0.0.1; remote endpoints are refused by construction) and, without
+  any model, still answers common questions deterministically. Changes it
+  drafts need an explicit Apply. See [docs/LOCAL-AI.md](docs/LOCAL-AI.md).
 
 ## Requirements
 
@@ -76,6 +103,12 @@ folder instead: `LEDGERBAR_INSTALL_DIR="$HOME/Applications"
 icon, use `./Tools/build-local-app.sh` and launch
 `.build/Local/LedgerBar.app` directly.
 
+Both bundles carry the LedgerBar icon: an "LB" monogram built from
+ledger-like strokes. The source drawing is `Design/AppIcon.svg`;
+`swift Tools/render-app-icon.swift LedgerBar/Resources/Assets.xcassets`
+regenerates the asset catalog from it with no third-party tools, and the
+menu-bar glyph is drawn from the same geometry at runtime.
+
 First launch runs onboarding: pick the budget currency, time zone, and
 first budget month. All three are fixed once the budget is created.
 
@@ -89,8 +122,10 @@ build described in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 ## Using the app
 
 The menu-bar popover shows the month at a glance; **Open LedgerBar** opens
-the full window with the budget grid, account registers, and the Review
-Queue. The gear opens Settings (SimpleFIN, Backup).
+the full window with the budget grid, account registers, Reports,
+Schedules, Rules, and the Review Queue. The budget switcher at the top of
+the sidebar changes the active budget. The gear opens Settings (SimpleFIN,
+Backup).
 
 When connecting SimpleFIN, a Setup Token that targets anything other than
 the official host is rejected locally first; the exact host is shown and
@@ -107,9 +142,10 @@ suite before any UI work.
 
 Current v1 boundaries you should know before moving your budget here:
 
-- One budget, one currency; currency, time zone, and first month are fixed
+- One currency per budget; currency, time zone, and first month are fixed
   at creation.
-- One SimpleFIN connection (it may expose many institutions and accounts).
+- One SimpleFIN connection per budget (it may expose many institutions and
+  accounts).
 - Only the current month can be assigned or reallocated; past and future
   months are read-only (past months can be closed and reopened).
 - The app ships with a starter set of category groups and categories, plus
@@ -118,9 +154,9 @@ Current v1 boundaries you should know before moving your budget here:
   (archived — history is kept, never deleted) and unhidden via the row's
   context menu. Reordering categories and groups is not yet supported.
 - Restore is manual (documented below); there is no restore UI.
-- Not yet: CSV/OFX import or export, reports and charts, goals, scheduled
-  or recurring transactions, split transactions, multi-currency, cloud
-  sync, iOS.
+- Not yet: QIF import, CSV export, goals, multi-currency, cloud sync, iOS.
+  The design behind splits, rules, file import, reports, schedules, and
+  multiple budgets is in [docs/DESIGN.md](docs/DESIGN.md).
 - Pending bank transactions are not imported; SimpleFIN history is roughly
   90 days (a provider constraint).
 - Credit cards cannot go positive in v1 — overpayments and cash advances

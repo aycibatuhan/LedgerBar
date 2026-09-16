@@ -580,6 +580,9 @@ public enum ReplayEngine {
                     // Never silently routed to RTA (§3.5.3).
                     return PostingDecision(postingState: .staged, stageReason: .unlinkedCardInflow)
                 }
+                if let splits = row.splits {
+                    return try classifySplitOutflow(row, splits: splits, month: month, ctx: ctx)
+                }
                 guard let cat = category, let categoryRow = ctx.categories[cat], categoryRow.kind == .spending else {
                     throw IntegrityError(code: .invalidRowState, month: month)
                 }
@@ -592,11 +595,44 @@ public enum ReplayEngine {
                 }
                 return PostingDecision(postingState: .posted)
             }
+            if let splits = row.splits {
+                return try classifySplitOutflow(row, splits: splits, month: month, ctx: ctx)
+            }
             guard let cat = category, let categoryRow = ctx.categories[cat], categoryRow.kind == .spending else {
                 throw IntegrityError(code: .invalidRowState, month: month)
             }
             return PostingDecision(postingState: cat == ctx.uncategorizedID ? .needsCategory : .posted)
         }
+    }
+
+    /// A split outflow (D3): the parent has no category, every component
+    /// targets a spending category with the parent's sign, and the components
+    /// sum exactly to the parent amount. Any `Uncategorized` component leaves
+    /// the whole row `needsCategory` (partial categorization).
+    static func classifySplitOutflow(
+        _ row: TransactionRow,
+        splits: [SplitComponent],
+        month: BudgetMonth,
+        ctx: Context
+    ) throws -> PostingDecision {
+        guard row.categoryID == nil, row.amountMilliunits < 0, splits.count >= 2 else {
+            throw IntegrityError(code: .invalidRowState, month: month)
+        }
+        var sum: Milliunits = 0
+        var needsCategory = false
+        for component in splits {
+            guard component.amountMilliunits < 0,
+                  let categoryRow = ctx.categories[component.categoryID],
+                  categoryRow.kind == .spending else {
+                throw IntegrityError(code: .invalidRowState, month: month)
+            }
+            sum = try addChecked(sum, component.amountMilliunits)
+            if component.categoryID == ctx.uncategorizedID { needsCategory = true }
+        }
+        guard sum == row.amountMilliunits else {
+            throw IntegrityError(code: .invalidRowState, month: month)
+        }
+        return PostingDecision(postingState: needsCategory ? .needsCategory : .posted)
     }
 
     static func classifyCardRefund(
@@ -632,18 +668,24 @@ public enum ReplayEngine {
         guard origin.month == month else {
             return PostingDecision(postingState: .staged, stageReason: .crossMonthRefund)
         }
+        // A split origin must be addressed by component; an unsplit origin
+        // must not be (D3.3). Anything else is a missing origin.
+        guard let originCategory = origin.refundCategory(componentIndex: row.refundOfComponentIndex) else {
+            return PostingDecision(postingState: .staged, stageReason: .missingRefundOrigin)
+        }
         // Materialized category copy must match the origin's current category.
-        if let stored = category, stored != origin.categoryID {
+        if let stored = category, stored != originCategory {
             throw IntegrityError(code: .invalidRowState, month: month)
         }
-        let lots = state.lots[origin.categoryID] ?? []
-        guard let lot = lots.first(where: { $0.purchaseID == originID }) else {
+        let componentIndex = row.refundOfComponentIndex ?? 0
+        let lots = state.lots[originCategory] ?? []
+        guard let lot = lots.first(where: { $0.purchaseID == originID && $0.componentIndex == componentIndex }) else {
             return PostingDecision(postingState: .staged, stageReason: .missingRefundOrigin)
         }
         if r > lot.remainingRefundable {
             return PostingDecision(postingState: .staged, stageReason: .overRefund)
         }
-        let creditDebt = state.spend[origin.categoryID]?.creditDebt ?? 0
+        let creditDebt = state.spend[originCategory]?.creditDebt ?? 0
         let d = min(r, creditDebt)
         let f = try subChecked(r, d)
         var capacity: Milliunits = 0
@@ -771,16 +813,45 @@ public enum ReplayEngine {
                 try addRTAActivity(row.amountMilliunits, state: &state)
                 return
             }
+            if let splits = row.splits {
+                // Each component is its own envelope event; card components
+                // each get their own provenance lot (D3.3).
+                for (index, component) in splits.enumerated() {
+                    let x = try negChecked(component.amountMilliunits)
+                    if account.type == .creditCard {
+                        try applyCardSpending(
+                            row, category: component.categoryID, amount: x, componentIndex: index,
+                            month: month, state: &state, ctx: ctx
+                        )
+                    } else {
+                        try applyCashSpending(category: component.categoryID, amount: x, state: &state, month: month)
+                    }
+                }
+                if account.type == .creditCard, let first = splits.first {
+                    state.purchaseIndex[row.id] = PurchaseInfo(
+                        month: month, categoryID: first.categoryID, cardAccountID: row.accountID,
+                        componentCategoryIDs: splits.map(\.categoryID)
+                    )
+                }
+                return
+            }
             guard let cat = category else { throw IntegrityError(code: .invalidRowState, month: month) }
             let x = try negChecked(row.amountMilliunits) // outflow magnitude >= 0
             if account.type == .creditCard {
-                try applyCardSpending(row, category: cat, amount: x, month: month, state: &state, ctx: ctx)
+                try applyCardSpending(row, category: cat, amount: x, componentIndex: 0, month: month, state: &state, ctx: ctx)
+                state.purchaseIndex[row.id] = PurchaseInfo(month: month, categoryID: cat, cardAccountID: row.accountID)
             } else {
                 try applyCashSpending(category: cat, amount: x, state: &state, month: month)
             }
 
         case .refund:
-            guard let cat = category ?? state.purchaseIndex[row.refundOfTransactionID ?? row.id]?.categoryID else {
+            let originCategory: CategoryID?
+            if let originID = row.refundOfTransactionID, let origin = state.purchaseIndex[originID] {
+                originCategory = origin.refundCategory(componentIndex: row.refundOfComponentIndex)
+            } else {
+                originCategory = nil
+            }
+            guard let cat = category ?? originCategory else {
                 throw IntegrityError(code: .invalidRowState, month: month)
             }
             if account.type == .creditCard {
@@ -820,6 +891,7 @@ public enum ReplayEngine {
         _ row: TransactionRow,
         category: CategoryID,
         amount x: Milliunits,
+        componentIndex: Int,
         month: BudgetMonth,
         state: inout State,
         ctx: Context
@@ -847,11 +919,11 @@ public enum ReplayEngine {
 
         state.lots[category, default: []].append(PurchaseLot(
             purchaseID: row.id,
+            componentIndex: componentIndex,
             cardAccountID: row.accountID,
             remainingRefundable: x,
             remainingFunded: fundedPortion
         ))
-        state.purchaseIndex[row.id] = PurchaseInfo(month: month, categoryID: category, cardAccountID: row.accountID)
         try assertBuckets(s, month: month)
     }
 
@@ -897,7 +969,8 @@ public enum ReplayEngine {
         guard f == 0 else { throw IntegrityError(code: .invalidRowState, month: month) }
 
         // Decrement the originating purchase's refundable lot by the full r.
-        guard let originIdx = lots.firstIndex(where: { $0.purchaseID == originID }) else {
+        let componentIndex = row.refundOfComponentIndex ?? 0
+        guard let originIdx = lots.firstIndex(where: { $0.purchaseID == originID && $0.componentIndex == componentIndex }) else {
             throw IntegrityError(code: .invalidReference, month: month)
         }
         lots[originIdx].remainingRefundable = try subChecked(lots[originIdx].remainingRefundable, r)

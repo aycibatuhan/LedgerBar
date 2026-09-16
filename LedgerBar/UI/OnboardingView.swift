@@ -6,6 +6,7 @@ import SwiftUI
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
 
+    @State private var name = "My Budget"
     @State private var currency = Locale.current.currency?.identifier ?? "USD"
     @State private var timeZoneID = TimeZone.current.identifier
     @State private var firstMonthOffset = 0 // months before the current month
@@ -41,6 +42,7 @@ struct OnboardingView: View {
                 .frame(maxWidth: 420)
 
             Form {
+                TextField("Budget name", text: $name)
                 TextField("Currency (ISO 4217)", text: $currency)
                     .accessibilityIdentifier("ledgerbar.onboarding.currency")
                     .onChange(of: currency) { _, value in
@@ -69,8 +71,10 @@ struct OnboardingView: View {
                 let selectedCurrency = currency
                 let selectedZone = timeZoneID
                 let month = choice.month
+                let budgetName = name
                 Task {
                     await model.createBudget(
+                        name: budgetName,
                         currency: selectedCurrency,
                         timeZoneIdentifier: selectedZone,
                         firstMonth: month

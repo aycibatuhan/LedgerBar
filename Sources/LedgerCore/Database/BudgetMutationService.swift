@@ -2,6 +2,8 @@ import Foundation
 
 public enum BudgetMutationServiceError: Error, Equatable, Sendable {
     case noLoadedBudget
+    case budgetIsActive
+    case budgetHasCredential
 }
 
 private struct SimpleFINSignViolation: Hashable {
@@ -45,12 +47,14 @@ public actor BudgetMutationService {
             timeZoneIdentifier: timeZoneIdentifier,
             firstMonth: firstMonth,
             currentMonth: currentMonth,
-            nowEpoch: nowEpoch
+            nowEpoch: nowEpoch,
+            sortOrder: ((try? store.listBudgets().map(\.sortOrder).max()) ?? nil).map { $0 + 1 } ?? 0
         )
         try store.create(created, nowEpoch: nowEpoch)
         workspace = created
         loadedSimpleFINState = nil
         projectionCache.removeAll()
+        try setActiveBudgetID(created.budget.id, nowEpoch: nowEpoch)
         return created.snapshot()
     }
 
@@ -92,6 +96,89 @@ public actor BudgetMutationService {
 
     public func currentSnapshot() -> BudgetWorkspaceSnapshot? {
         workspace?.snapshot()
+    }
+
+    // MARK: - Budget registry (D8)
+
+    public var loadedBudgetID: BudgetID? { workspace?.budget.id }
+
+    public func listBudgets() throws -> [BudgetSummary] {
+        try store.listBudgets()
+    }
+
+    public func activeBudgetID() throws -> BudgetID? {
+        guard let value = try store.setting(LedgerWorkspaceStore.activeBudgetSettingKey), let uuid = UUID(uuidString: value) else { return nil }
+        return BudgetID(uuid)
+    }
+
+    public func appSetting(_ key: String) throws -> String? {
+        try store.setting(key)
+    }
+
+    public func setAppSetting(_ key: String, value: String?, nowEpoch: Int64) throws {
+        try store.setSetting(key, value: value, nowEpoch: nowEpoch)
+    }
+
+    public func loadAssistantTranscript(budgetID: BudgetID) throws -> AssistantTranscript? {
+        try store.loadAssistantTranscript(budgetID: budgetID)
+    }
+
+    public func saveAssistantTranscript(_ transcript: AssistantTranscript?, budgetID: BudgetID, nowEpoch: Int64) throws {
+        try store.saveAssistantTranscript(transcript, budgetID: budgetID, nowEpoch: nowEpoch)
+    }
+
+    public func setActiveBudgetID(_ id: BudgetID?, nowEpoch: Int64) throws {
+        try store.setSetting(LedgerWorkspaceStore.activeBudgetSettingKey, value: id?.description, nowEpoch: nowEpoch)
+    }
+
+    /// Loads the active budget: the persisted choice, else the first
+    /// non-archived budget, else the first budget.
+    @discardableResult
+    public func loadActive() throws -> BudgetWorkspaceSnapshot {
+        let budgets = try store.listBudgets()
+        guard !budgets.isEmpty else { throw LedgerPersistenceError.workspaceNotFound }
+        if let active = try activeBudgetID(), budgets.contains(where: { $0.id == active }) {
+            return try load(budgetID: active)
+        }
+        let target = budgets.first { !$0.archived } ?? budgets[0]
+        return try load(budgetID: target.id)
+    }
+
+    /// Switches the loaded workspace. The projection cache and SimpleFIN
+    /// state are replaced wholesale; nothing from the previous budget
+    /// survives in memory.
+    @discardableResult
+    public func switchBudget(to id: BudgetID, nowEpoch: Int64) throws -> BudgetWorkspaceSnapshot {
+        let snapshot = try load(budgetID: id)
+        try setActiveBudgetID(id, nowEpoch: nowEpoch)
+        return snapshot
+    }
+
+    /// Physically deletes a budget that is not currently loaded. Callers
+    /// must have removed its SimpleFIN credential first (the connection
+    /// state must be absent or disconnected) so no Keychain item is orphaned.
+    public func deleteBudget(_ id: BudgetID) throws {
+        guard workspace?.budget.id != id else { throw BudgetMutationServiceError.budgetIsActive }
+        if let state = try store.loadSimpleFINState(budgetID: id), state.keychainItemID != nil || state.status == .active {
+            throw BudgetMutationServiceError.budgetHasCredential
+        }
+        try store.deleteBudget(id)
+    }
+
+    /// Creates a budget from an exported snapshot with fresh identities.
+    @discardableResult
+    public func importBudget(_ export: BudgetExport, name: String?, nowEpoch: Int64) throws -> BudgetWorkspaceSnapshot {
+        let remapped = try BudgetTransfer.remapIdentities(export.snapshot)
+        var workspace = try BudgetWorkspace(snapshot: remapped)
+        if let name { try workspace.renameBudget(to: name) }
+        workspace.setBudgetSortOrder(((try? store.listBudgets().map(\.sortOrder).max()) ?? nil).map { $0 + 1 } ?? 0)
+        workspace.setBudgetArchivedFlag(false)
+        try store.create(workspace, nowEpoch: nowEpoch)
+        self.workspace = workspace
+        loadedSimpleFINState = nil
+        projectionCache.removeAll()
+        try setActiveBudgetID(workspace.budget.id, nowEpoch: nowEpoch)
+        return workspace.snapshot()
     }
 
     /// Returns a projection from the actor-owned revision/horizon cache. The

@@ -36,6 +36,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: LedgerBar/App/LedgerBar.entitlements
         ENABLE_HARDENED_RUNTIME: YES
         ENABLE_APP_SANDBOX: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   LedgerBarTests:
     type: bundle.unit-test
     platform: macOS

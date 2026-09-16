@@ -27,6 +27,19 @@ public enum ProjectionCacheWrite: Sendable {
     case replace([ProjectionCacheEntry])
 }
 
+/// Registry entry for the budget switcher (D8).
+public struct BudgetSummary: Sendable, Equatable, Identifiable {
+    public var id: BudgetID
+    public var name: String
+    public var currency: String
+    public var firstMonth: BudgetMonth
+    public var currentMonth: BudgetMonth
+    public var archived: Bool
+    public var sortOrder: Int
+    public var createdAtEpoch: Int64
+    public var revision: Int64
+}
+
 public enum SimpleFINStateExpectation: Sendable {
     case unchecked
     case unchanged(SimpleFINConnectionState?)
@@ -46,10 +59,41 @@ public final class LedgerWorkspaceStore: @unchecked Sendable {
             at: databaseURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        try Self.createPreUpgradeBackupIfNeeded(databaseURL: databaseURL)
         var configuration = Configuration()
         configuration.foreignKeysEnabled = true
         let databasePool = try DatabasePool(path: databaseURL.path, configuration: configuration)
         try self.init(writer: databasePool)
+    }
+
+    /// The first migration of the financial-system series rebuilds the
+    /// `transactions` mirror. Before an existing pre-v10 database is
+    /// migrated, a verified sibling copy is written next to it
+    /// (`<name>-before-v10.sqlite`) so the upgrade is recoverable with the
+    /// documented manual restore. A new database, or one already at v10 or
+    /// later, gets no copy; an existing copy is never overwritten.
+    static func createPreUpgradeBackupIfNeeded(databaseURL: URL) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: databaseURL.path) else { return }
+        let backupURL = databaseURL.deletingPathExtension().appendingPathExtension("before-v10.sqlite")
+        guard !fileManager.fileExists(atPath: backupURL.path) else { return }
+        let needsBackup: Bool = try {
+            let queue = try DatabaseQueue(path: databaseURL.path)
+            return try queue.read { db in
+                guard try db.tableExists("grdb_migrations"), try db.tableExists("budgets") else { return false }
+                let applied = try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations")
+                return !applied.contains { $0.hasPrefix("v10-") }
+            }
+        }()
+        guard needsBackup else { return }
+        let source = try DatabaseQueue(path: databaseURL.path)
+        let destination = try DatabaseQueue(path: backupURL.path)
+        try source.backup(to: destination)
+        let integrity = try destination.read { db in try String.fetchOne(db, sql: "PRAGMA integrity_check") ?? "" }
+        guard integrity.lowercased() == "ok" else {
+            try? fileManager.removeItem(at: backupURL)
+            throw LedgerPersistenceError.backupIntegrityCheckFailed
+        }
     }
 
     /// A process-local fallback for rendering failure states when the normal
@@ -87,6 +131,111 @@ public final class LedgerWorkspaceStore: @unchecked Sendable {
             return try BudgetWorkspace(snapshot: decoder.decode(BudgetWorkspaceSnapshot.self, from: payload))
         } catch {
             throw LedgerPersistenceError.invalidSnapshot
+        }
+    }
+
+    // MARK: - Assistant conversations (docs/LOCAL-AI.md A7)
+
+    public func loadAssistantTranscript(budgetID: BudgetID) throws -> AssistantTranscript? {
+        let payload: Data? = try pool.read { db in
+            try Row.fetchOne(db, sql: "SELECT payload FROM assistant_conversations WHERE budget_id = ?", arguments: [budgetID.description])?["payload"]
+        }
+        guard let payload else { return nil }
+        return try? decoder.decode(AssistantTranscript.self, from: payload)
+    }
+
+    public func saveAssistantTranscript(_ transcript: AssistantTranscript?, budgetID: BudgetID, nowEpoch: Int64) throws {
+        try pool.write { db in
+            if let transcript {
+                let payload = try encoder.encode(transcript)
+                try db.execute(sql: "INSERT INTO assistant_conversations(budget_id, payload, updated_at_epoch) VALUES (?, ?, ?) ON CONFLICT(budget_id) DO UPDATE SET payload = excluded.payload, updated_at_epoch = excluded.updated_at_epoch", arguments: [budgetID.description, payload, nowEpoch])
+            } else {
+                try db.execute(sql: "DELETE FROM assistant_conversations WHERE budget_id = ?", arguments: [budgetID.description])
+            }
+        }
+    }
+
+    // MARK: - Budget registry (docs/DESIGN.md D8)
+
+    public func listBudgets() throws -> [BudgetSummary] {
+        try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT id, name, currency, first_month, last_observed_month, archived, sort_order, created_at_epoch, revision FROM budgets ORDER BY sort_order, created_at_epoch, id")
+            return rows.compactMap { row in
+                guard let idString: String = row["id"], let uuid = UUID(uuidString: idString),
+                      let name: String = row["name"], let currency: String = row["currency"],
+                      let firstString: String = row["first_month"], let first = BudgetMonth(string: firstString),
+                      let currentString: String = row["last_observed_month"], let current = BudgetMonth(string: currentString) else { return nil }
+                return BudgetSummary(
+                    id: BudgetID(uuid), name: name, currency: currency, firstMonth: first, currentMonth: current,
+                    archived: (row["archived"] as Int? ?? 0) == 1, sortOrder: row["sort_order"] as Int? ?? 0,
+                    createdAtEpoch: row["created_at_epoch"] as Int64? ?? 0, revision: row["revision"] as Int64? ?? 0
+                )
+            }
+        }
+    }
+
+    public static let activeBudgetSettingKey = "activeBudgetID"
+
+    public func setting(_ key: String) throws -> String? {
+        try pool.read { db in
+            try String.fetchOne(db, sql: "SELECT value FROM app_settings WHERE key = ?", arguments: [key])
+        }
+    }
+
+    public func setSetting(_ key: String, value: String?, nowEpoch: Int64) throws {
+        try pool.write { db in
+            if let value {
+                try db.execute(sql: "INSERT INTO app_settings(key, value, updated_at_epoch) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_epoch = excluded.updated_at_epoch", arguments: [key, value, nowEpoch])
+            } else {
+                try db.execute(sql: "DELETE FROM app_settings WHERE key = ?", arguments: [key])
+            }
+        }
+    }
+
+    /// The one physical deletion in the system: every row of one budget, in
+    /// child-to-parent order, plus its state blobs, caches, and request log.
+    /// Other budgets are untouched. The caller confirms and audits.
+    public func deleteBudget(_ budgetID: BudgetID) throws {
+        let id = budgetID.description
+        try pool.write { db in
+            try db.execute(sql: "DELETE FROM transfer_leg_snapshots WHERE transfer_pair_id IN (SELECT id FROM transfer_pairs WHERE budget_id = ?)", arguments: [id])
+            for table in [
+                "schedule_reviews", "schedule_occurrences", "schedules",
+                "reports", "file_imports", "import_batches", "import_mappings",
+                "sync_conflicts", "simplefin_imports", "snapshot_discrepancies",
+                "trusted_hosts", "simplefin_links", "simplefin_connections",
+                "reconciliation_transactions", "reconciliations",
+                "reconciliation_membership", "transaction_splits", "transactions", "allocations",
+                "closed_months", "audit_events", "automation_rules", "payees", "categories",
+                "category_groups", "accounts", "transfer_pairs",
+                "sync_request_log", "projection_caches", "simplefin_state", "assistant_conversations", "workspace_states"
+            ] {
+                try db.execute(sql: "DELETE FROM \(table) WHERE budget_id = ?", arguments: [id])
+            }
+            try db.execute(sql: "DELETE FROM budgets WHERE id = ?", arguments: [id])
+            if try String.fetchOne(db, sql: "SELECT value FROM app_settings WHERE key = ?", arguments: [Self.activeBudgetSettingKey]) == id {
+                try db.execute(sql: "DELETE FROM app_settings WHERE key = ?", arguments: [Self.activeBudgetSettingKey])
+            }
+        }
+    }
+
+    /// Revision observation for one budget only.
+    public func observeRevisions(budgetID: BudgetID) -> AsyncThrowingStream<Int64, Error> {
+        let id = budgetID.description
+        let observation = ValueObservation.tracking { db in
+            try Int64.fetchOne(db, sql: "SELECT COALESCE(revision, 0) FROM workspace_states WHERE budget_id = ?", arguments: [id]) ?? 0
+        }
+        let values = observation.values(in: pool)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await revision in values { continuation.yield(revision) }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -491,8 +640,9 @@ public final class LedgerWorkspaceStore: @unchecked Sendable {
             sql: """
             INSERT INTO budgets
               (id, name, currency, timezone_identifier, first_month,
-               last_observed_month, next_local_source_sequence, created_at_epoch, revision)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               last_observed_month, next_local_source_sequence, created_at_epoch, revision,
+               archived, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               name = excluded.name,
               currency = excluded.currency,
@@ -501,13 +651,16 @@ public final class LedgerWorkspaceStore: @unchecked Sendable {
               last_observed_month = excluded.last_observed_month,
               next_local_source_sequence = excluded.next_local_source_sequence,
               created_at_epoch = excluded.created_at_epoch,
-              revision = excluded.revision
+              revision = excluded.revision,
+              archived = excluded.archived,
+              sort_order = excluded.sort_order
             """,
             arguments: [
                 budget.id.description, budget.name, budget.currency,
                 budget.timeZoneIdentifier, budget.firstMonth.description,
                 budget.lastObservedBudgetMonth.description,
-                budget.nextLocalSourceSequence, budget.createdAtEpoch, budget.revision
+                budget.nextLocalSourceSequence, budget.createdAtEpoch, budget.revision,
+                budget.archived ? 1 : 0, budget.sortOrder
             ]
         )
     }
@@ -535,11 +688,13 @@ public final class LedgerWorkspaceStore: @unchecked Sendable {
             arguments: [budgetID]
         )
         for table in [
+            "schedule_reviews", "schedule_occurrences", "schedules",
+            "reports", "file_imports", "import_batches", "import_mappings",
             "sync_conflicts", "simplefin_imports", "snapshot_discrepancies",
             "trusted_hosts", "simplefin_links", "simplefin_connections",
             "reconciliation_transactions", "reconciliations",
-            "reconciliation_membership", "transactions", "allocations",
-            "closed_months", "audit_events", "payees", "categories",
+            "reconciliation_membership", "transaction_splits", "transactions", "allocations",
+            "closed_months", "audit_events", "automation_rules", "payees", "categories",
             "category_groups", "accounts", "transfer_pairs"
         ] {
             try db.execute(sql: "DELETE FROM \(table) WHERE budget_id = ?", arguments: [budgetID])
@@ -588,7 +743,8 @@ public final class LedgerWorkspaceStore: @unchecked Sendable {
         // still rejected by SQLite.
         for transaction in refundDependencyOrder(snapshot.transactions) {
             let stageMetadata = try transaction.stageMetadata.map { try encoder.encode($0) }
-            try db.execute(sql: "INSERT INTO transactions(id, budget_id, account_id, payee_id, source_kind, date, effective_at_epoch, source_order_key, memo, amount_milliunits, cleared, approved, flag_color, posting_state, stage_reason, stage_metadata, user_edited_at_epoch, category_id, transfer_pair_id, refund_of_transaction_id, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", arguments: [
+            let splitsPayload = try transaction.splits.map { try encoder.encode($0) }
+            try db.execute(sql: "INSERT INTO transactions(id, budget_id, account_id, payee_id, source_kind, date, effective_at_epoch, source_order_key, memo, amount_milliunits, cleared, approved, flag_color, posting_state, stage_reason, stage_metadata, user_edited_at_epoch, category_id, transfer_pair_id, refund_of_transaction_id, kind, splits, imported_description, refund_of_component_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", arguments: [
                 transaction.id.description, budgetID, transaction.accountID.description,
                 transaction.payeeID?.description, transaction.sourceKind.rawValue,
                 transaction.date.description, transaction.effectiveAtEpoch,
@@ -597,8 +753,17 @@ public final class LedgerWorkspaceStore: @unchecked Sendable {
                 transaction.flagColor?.rawValue, transaction.postingState.rawValue,
                 transaction.stageReason?.rawValue, stageMetadata, transaction.userEditedAtEpoch,
                 transaction.categoryID?.description, transaction.transferPairID?.description,
-                transaction.refundOfTransactionID?.description, transaction.kind.rawValue
+                transaction.refundOfTransactionID?.description, transaction.kind.rawValue,
+                splitsPayload, transaction.importedDescription, transaction.refundOfComponentIndex
             ])
+            if let splits = transaction.splits {
+                for (index, component) in splits.enumerated() {
+                    try db.execute(sql: "INSERT INTO transaction_splits(transaction_id, component_index, budget_id, category_id, amount_milliunits, memo) VALUES (?, ?, ?, ?, ?, ?)", arguments: [
+                        transaction.id.description, index, budgetID,
+                        component.categoryID.description, component.amountMilliunits, component.memo
+                    ])
+                }
+            }
         }
         for group in snapshot.legSnapshots {
             let data = try encoder.encode(group.rows)
@@ -640,12 +805,71 @@ public final class LedgerWorkspaceStore: @unchecked Sendable {
                 ])
             }
         }
+        for rule in snapshot.automationRules {
+            let payload = try encoder.encode(rule)
+            try db.execute(sql: "INSERT INTO automation_rules(id, budget_id, name, enabled, sort_order, match_mode, stop_after_match, payload, created_at_epoch, updated_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", arguments: [
+                rule.id.description, budgetID, rule.name, rule.enabled ? 1 : 0, rule.sortOrder,
+                rule.matchMode.rawValue, rule.stopAfterMatch ? 1 : 0, payload,
+                rule.createdAtEpoch, rule.updatedAtEpoch
+            ])
+        }
+        for batch in snapshot.importBatches {
+            try db.execute(sql: "INSERT INTO import_batches(id, budget_id, account_id, format, file_name, imported_at_epoch, imported_count, skipped_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", arguments: [
+                batch.id.description, budgetID, batch.accountID.description, batch.format.rawValue,
+                batch.fileName, batch.importedAtEpoch, batch.importedCount, batch.skippedCount
+            ])
+        }
+        for record in snapshot.fileImports {
+            let raw = try encoder.encode(record.rawFields)
+            try db.execute(sql: "INSERT INTO file_imports(transaction_id, budget_id, batch_id, external_id, fingerprint, raw_fields) VALUES (?, ?, ?, ?, ?, ?)", arguments: [
+                record.transactionID.description, budgetID, record.batchID.description,
+                record.externalID, record.fingerprint, raw
+            ])
+        }
+        for mapping in snapshot.importMappings {
+            let payload = try encoder.encode(mapping.mapping)
+            try db.execute(sql: "INSERT INTO import_mappings(id, budget_id, name, format, header_fingerprint, payload, created_at_epoch, last_used_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", arguments: [
+                mapping.id.description, budgetID, mapping.name, mapping.format.rawValue,
+                mapping.headerFingerprint, payload, mapping.createdAtEpoch, mapping.lastUsedAtEpoch
+            ])
+        }
+        for report in snapshot.reports {
+            let payload = try encoder.encode(report.definition)
+            try db.execute(sql: "INSERT INTO reports(id, budget_id, name, kind, sort_order, payload, created_at_epoch, updated_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", arguments: [
+                report.id.description, budgetID, report.name, report.definition.kind.rawValue,
+                report.sortOrder, payload, report.createdAtEpoch, report.updatedAtEpoch
+            ])
+        }
+        for schedule in snapshot.schedules {
+            let payload = try encoder.encode(schedule)
+            try db.execute(sql: "INSERT INTO schedules(id, budget_id, account_id, name, status, amount_milliunits, start_date, end_date, payload, created_at_epoch, updated_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", arguments: [
+                schedule.id.description, budgetID, schedule.accountID.description, schedule.name, schedule.status.rawValue,
+                schedule.amountMilliunits, schedule.startDate.description, schedule.endDate?.description, payload,
+                schedule.createdAtEpoch, schedule.updatedAtEpoch
+            ])
+        }
+        for occurrence in snapshot.scheduleOccurrences {
+            try db.execute(sql: "INSERT INTO schedule_occurrences(schedule_id, due_date, budget_id, status, transaction_id, resolved_at_epoch, match_score) VALUES (?, ?, ?, ?, ?, ?, ?)", arguments: [
+                occurrence.scheduleID.description, occurrence.dueDate.description, budgetID, occurrence.status.rawValue,
+                occurrence.transactionID?.description, occurrence.resolvedAtEpoch, occurrence.matchScore
+            ])
+        }
+        for review in snapshot.scheduleReviews {
+            let candidates = try encoder.encode(review.candidateTransactionIDs)
+            try db.execute(sql: "INSERT INTO schedule_reviews(id, budget_id, schedule_id, due_date, status, candidates, created_at_epoch, resolved_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", arguments: [
+                review.id.description, budgetID, review.scheduleID.description, review.dueDate.description,
+                review.status.rawValue, candidates, review.createdAtEpoch, review.resolvedAtEpoch
+            ])
+        }
         // SimpleFIN mirrors last: imports reference transactions, conflicts
         // reference imports, discrepancies reference accounts/transactions.
         for record in snapshot.simpleFINImports {
+            // The mirror's composite identity is scoped by the per-budget
+            // connection id (D8): two budgets may legitimately import the
+            // same remote row.
             try db.execute(sql: "INSERT INTO simplefin_imports(id, budget_id, transaction_id, connection_id, remote_connection_key, remote_account_id, remote_transaction_id, remote_amount, remote_posted_epoch, remote_transacted_epoch, remote_payload_hash, protocol_version, last_seen_epoch, remote_disappearance_acknowledged) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", arguments: [
                 record.id.description, budgetID, record.transactionID.description,
-                "primary", record.connectionKey, record.remoteAccountID,
+                "\(budgetID):primary", record.connectionKey, record.remoteAccountID,
                 record.remoteTransactionID, record.remoteAmountDecimalString,
                 record.remotePostedEpoch, record.remoteTransactedEpoch,
                 record.remotePayloadHash, record.protocolVersion, record.lastSeenEpoch,

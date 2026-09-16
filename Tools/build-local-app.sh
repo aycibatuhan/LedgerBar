@@ -45,6 +45,14 @@ cp "$ROOT_DIR/LedgerBar/App/Info.plist" "$STAGED_APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.ledgerbar.app' "$STAGED_APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleName LedgerBar' "$STAGED_APP/Contents/Info.plist"
 
+# App icon: assemble AppIcon.icns from the same PNGs the Xcode asset catalog
+# uses (Tools/render-app-icon.swift regenerates them from Design/AppIcon.svg).
+ICONSET_DIR="$STAGING_DIR/AppIcon.iconset"
+mkdir -p "$ICONSET_DIR"
+cp "$ROOT_DIR"/LedgerBar/Resources/Assets.xcassets/AppIcon.appiconset/icon_*.png "$ICONSET_DIR/"
+iconutil --convert icns --output "$STAGED_APP/Contents/Resources/AppIcon.icns" "$ICONSET_DIR"
+/usr/libexec/PlistBuddy -c 'Add :CFBundleIconFile string AppIcon' "$STAGED_APP/Contents/Info.plist"
+
 if [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STAGED_APP/Contents/Info.plist")" != "com.ledgerbar.app" ]]; then
     printf 'Local bundle has an invalid CFBundleIdentifier\n' >&2
     exit 1

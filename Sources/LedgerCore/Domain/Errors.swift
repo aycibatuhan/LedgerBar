@@ -55,6 +55,9 @@ public enum MutationError: Error, Equatable, Sendable {
     case transactionImmutable                // imported identity/account immutability
     case reconciledTransaction
     case transactionHasDependents
+    case splitInvalid                        // <2 components, zero/mixed-sign component, or sum != amount
+    case splitNotAllowed                     // not a normal on-budget outflow, transfer leg, or ineligible account
+    case transactionIsSplit                  // amount edits require unsplitting first
 
     // Transfers
     case unsupportedTransferPair             // card→cash, card→card, off→card, mismatched currency
@@ -83,6 +86,9 @@ public enum MutationError: Error, Equatable, Sendable {
     case accountHasActivity                  // close-account guard
     case accountHasTransferPairs             // close-voiding-history guard: unpair first
     case categoryHasAvailable                // hide-category guard
+    case ruleInvalid                         // empty name/conditions/actions or bad references
+    case scheduleInvalid                     // bad recurrence/amount/window/account/end date
+    case scheduleOccurrenceResolved          // occurrence already matched/entered/skipped, or row already serves one
 
     case arithmeticOverflow
 }

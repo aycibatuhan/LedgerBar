@@ -24,6 +24,8 @@ struct AddTransactionSheet: View {
     @State private var onLegCategoryID: CategoryID?
     @State private var amountText = ""
     @State private var memo = ""
+    @State private var isSplit = false
+    @State private var splitLines: [SplitDraftLine] = [SplitDraftLine(), SplitDraftLine()]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -57,12 +59,23 @@ struct AddTransactionSheet: View {
                     .pickerStyle(.segmented)
                     TextField("Payee", text: $payee)
                     if selectedAccountIsOnBudget {
-                        Picker("Category", selection: $categoryID) {
-                            Text(direction == .inflow ? "Inflow: Ready to Assign" : "Choose…")
-                                .tag(Optional<CategoryID>.none)
-                            if direction == .outflow {
-                                ForEach(spendingCategories, id: \.id) { category in
-                                    Text(category.name).tag(Optional(category.id))
+                        if direction == .outflow {
+                            Toggle("Split across categories", isOn: $isSplit)
+                        }
+                        if isSplit && direction == .outflow {
+                            SplitEditor(
+                                totalMagnitude: try? MoneyFormatting.parse(amountText),
+                                currency: model.budgetCurrency,
+                                lines: $splitLines
+                            )
+                        } else {
+                            Picker("Category", selection: $categoryID) {
+                                Text(direction == .inflow ? "Inflow: Ready to Assign" : "Choose…")
+                                    .tag(Optional<CategoryID>.none)
+                                if direction == .outflow {
+                                    ForEach(spendingCategories, id: \.id) { category in
+                                        Text(category.name).tag(Optional(category.id))
+                                    }
                                 }
                             }
                         }
@@ -127,10 +140,21 @@ struct AddTransactionSheet: View {
         spendingCategories
     }
 
+    private var splitActive: Bool {
+        isSplit && !isTransfer && direction == .outflow && selectedAccountIsOnBudget
+    }
+
+    private var draftComponents: [SplitComponent]? {
+        guard splitActive, let magnitude = try? MoneyFormatting.parse(amountText), magnitude > 0 else { return nil }
+        return SplitEditor.components(splitLines, totalMagnitude: magnitude)
+    }
+
     private var canSave: Bool {
         guard accountID != nil, !amountText.isEmpty else { return false }
         if isTransfer { return destinationAccountID != nil }
-        return !payee.trimmingCharacters(in: .whitespaces).isEmpty
+        guard !payee.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        if splitActive { return draftComponents != nil }
+        return true
     }
 
     private var budgetTimeZone: TimeZone {
@@ -189,13 +213,16 @@ struct AddTransactionSheet: View {
                 }
             } else {
                 let amount = direction == .outflow ? try negChecked(magnitude) : magnitude
+                let components = draftComponents
                 let category: CategoryID?
-                if selectedAccountIsOnBudget {
+                if components != nil {
+                    category = nil
+                } else if selectedAccountIsOnBudget {
                     category = direction == .inflow ? snapshot.rtaCategoryID : categoryID
                 } else {
                     category = nil
                 }
-                if selectedAccountIsOnBudget && direction == .outflow && category == nil {
+                if selectedAccountIsOnBudget && direction == .outflow && category == nil && components == nil {
                     model.actionError = "Choose a category."
                     return
                 }
@@ -210,6 +237,7 @@ struct AddTransactionSheet: View {
                             categoryID: category,
                             amountMilliunits: amount,
                             memo: memoText,
+                            splits: components,
                             nowEpoch: now
                         )
                     }
@@ -236,9 +264,17 @@ struct CategorizeSheet: View {
     let mode: Mode
 
     @State private var categoryID: CategoryID?
+    @State private var createRule = false
+    @State private var ruleMatchText = ""
+    @State private var ruleRenameText = ""
 
     private var row: TransactionRow? {
         model.snapshot?.transactions.first { $0.id == transactionID }
+    }
+
+    /// A rule can be suggested only for an imported row with a raw description.
+    private var canSuggestRule: Bool {
+        mode == .categorize && row?.importedDescription != nil && (row?.amountMilliunits ?? 0) < 0
     }
 
     var body: some View {
@@ -248,12 +284,25 @@ struct CategorizeSheet: View {
                 Text("A cash reimbursement increases a spending category instead of Ready to Assign. It posts only when the category has no credit overspending; otherwise it is staged.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } else if row?.isSplit == true {
+                Text("This transaction is split. Choosing one category replaces the split; use Edit Split to change the allocation instead.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
             Form {
                 Picker("Category", selection: $categoryID) {
                     Text("Choose…").tag(Optional<CategoryID>.none)
                     ForEach(choices, id: \.id) { category in
                         Text(category.name).tag(Optional(category.id))
+                    }
+                }
+                if canSuggestRule {
+                    Toggle("Also create a rule for this imported payee", isOn: $createRule)
+                    if createRule {
+                        TextField("When imported payee contains", text: $ruleMatchText)
+                        TextField("Rename payee to (optional)", text: $ruleRenameText)
+                        Text("The rule categorizes future imports that match; it never changes amounts or existing decisions.")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -263,11 +312,15 @@ struct CategorizeSheet: View {
                 Button("Cancel") { dismiss() }
                 Button("Apply") { apply() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(categoryID == nil)
+                    .disabled(categoryID == nil || (createRule && ruleMatchText.trimmingCharacters(in: .whitespaces).isEmpty))
             }
         }
         .padding(20)
-        .frame(width: 400)
+        .frame(width: 440)
+        .onAppear {
+            ruleMatchText = row?.importedDescription ?? ""
+            ruleRenameText = model.payeeName(row?.payeeID)
+        }
     }
 
     private var choices: [CategoryRow] {
@@ -288,6 +341,9 @@ struct CategorizeSheet: View {
         let id = transactionID
         let now = model.nowEpoch
         let mode = mode
+        let makeRule = createRule && canSuggestRule
+        let matchText = ruleMatchText.trimmingCharacters(in: .whitespaces)
+        let renameText = ruleRenameText.trimmingCharacters(in: .whitespaces)
         Task {
             let done: Bool? = await model.perform { workspace in
                 switch mode {
@@ -295,6 +351,17 @@ struct CategorizeSheet: View {
                     try workspace.categorize(transactionID: id, categoryID: categoryID, nowEpoch: now)
                 case .cashReimbursement:
                     try workspace.classifyAsCashReimbursement(id, categoryID: categoryID, nowEpoch: now)
+                }
+                if makeRule {
+                    var actions: [RuleAction] = []
+                    if !renameText.isEmpty { actions.append(.setPayee(renameText)) }
+                    actions.append(.setCategory(categoryID))
+                    _ = try workspace.addRule(
+                        name: renameText.isEmpty ? matchText : renameText,
+                        conditions: [.importedDescription(.contains, matchText)],
+                        actions: actions,
+                        nowEpoch: now
+                    )
                 }
                 return true
             }

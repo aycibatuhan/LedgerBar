@@ -32,7 +32,9 @@ let package = Package(
             name: "LedgerBarApp",
             dependencies: ["LedgerCore"],
             path: "LedgerBar",
-            exclude: ["App/Info.plist", "App/LedgerBar.entitlements"],
+            // Resources/ holds the Xcode asset catalog (app icon); the SwiftPM
+            // build gets its .icns from Tools/build-local-app.sh instead.
+            exclude: ["App/Info.plist", "App/LedgerBar.entitlements", "Resources"],
             linkerSettings: [
                 // Embed Info.plist (LSUIElement etc.) into the bare SwiftPM
                 // binary; the XcodeGen app bundle uses the plist file itself.

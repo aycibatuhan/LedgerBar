@@ -30,6 +30,15 @@ public struct SourceOrderKey: Hashable, Sendable, Codable, Comparable, CustomStr
         )
     }
 
+    /// File-import rows: `file:<len>:<batch><len>:<row>` where `row` is the
+    /// batch-local row key (external ID or fingerprint). Stable after insert.
+    public static func file(batchKey: String, rowKey: String) -> SourceOrderKey {
+        func lengthPrefixed(_ s: String) -> String {
+            "\(s.utf8.count):\(s)"
+        }
+        return SourceOrderKey(rawValue: "file:" + lengthPrefixed(batchKey) + lengthPrefixed(rowKey))
+    }
+
     public static func manual(sequence: Int64) -> SourceOrderKey {
         SourceOrderKey(rawValue: "manual:" + Self.paddedSequence(sequence))
     }

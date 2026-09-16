@@ -41,13 +41,13 @@ v1 implements a small, deterministic core that can actually ship:
 
 ### 1.2 Deferred to v1.1
 
-- Reports, charts, net-worth views, and CSV import.
-- Future-month assignments, future-month reallocation, scheduled transactions, goals, multiple budgets.
-- Split transactions, including splits containing transfer legs.
-- Automatic manual/import matching and automatic transfer suggestions.
-- User-configurable payee rename rules.
-- Database restore UI, OFX/QFX import, investment tracking, and loan amortization.
+- Future-month assignments, future-month reallocation, goals.
+- Splits containing transfer legs (category splits are §3.11).
+- Automatic manual/import matching and automatic transfer suggestions (schedule matching links rows to *expected* events, §3.12, but never merges two rows).
+- Database restore UI, QIF import, CSV export, investment tracking, and loan amortization.
 - iOS/iPadOS applications and cloud synchronization.
+
+Shipped after v1 and specified in `docs/DESIGN.md`: split transactions (§3.11), automation rules (D4, hooked into §4.3 step 4½), file import for CSV/OFX/QFX (D6), reports (D7), schedules (§3.12/D5), and multiple budgets (D8). The single-budget accounting rules below are unchanged; each budget is an independent instance of them.
 
 The v1 boundary is deliberate: correctness of the ledger and budget engine is more important than feature breadth.
 
@@ -82,7 +82,9 @@ Every row below has a `budget_id` foreign key unless explicitly marked budget-gl
 - **AuditEvent**: `id`, `budget_id`, `entity_type`, `entity_id`, `event_kind`, sanitized metadata, and `created_at`. It records staged-row resolutions, explicit pairing, reconciliation undo, and other user-visible accounting mutations without secrets.
 - **ClosedMonth**: `budget_id`, `month` (`YYYY-MM`), `status` (`closed`, `reopened`), `closed_at`, nullable `reopened_at`. Unique `(budget_id, month)`. A `closed` month blocks user allocation changes and user edits/deletions/reclassification of existing transactions that affect that month's replay (amount/date/category/kind/posting-state/void/transfer/refund/reconciliation membership); an explicit audited reopen is required before those corrections. Append-only remote import materialization is the sole exception: a new remote row whose date falls in a closed month is inserted as `staged` with `stage_reason = closedMonthImport`, never re-staged or auto-resolved while closed, and its account cursor may advance after that append-only commit. Reopening is atomic, visible in history, and the month must be closed again deliberately.
 
-The v1 migration does **not** create a subtransactions table. A v1.1 migration can add one after the single-category model is stable.
+The v1 migration does **not** create a subtransactions table. Category splits (§3.11) are stored on the transaction row as `splits` (JSON components) with a `transaction_splits` mirror; a split is an allocation of one physical row, never a set of rows.
+
+Two further transaction fields exist since schema v10: immutable nullable `imported_description` (the provider/file payee text exactly as received; rules match on it and never overwrite it — `docs/DESIGN.md` D4.2) and nullable `refund_of_component_index` (a linked refund of a split purchase names its component, §3.11). `source_kind` also admits `file` for rows imported from a user-supplied file (`docs/DESIGN.md` D6); such rows carry a `FileImportRecord` identity exactly as `simplefin` rows carry a `SimpleFINImport`.
 
 ### 2.2 Required system entities and onboarding
 
@@ -112,6 +114,7 @@ The mutation service enforces these rules before writing; SQLite checks/triggers
 | posted linked credit-card refund | required | required; `kind = spending`, `Transaction.kind = refund`, earlier same-card origin | register + positive spending-category activity plus refund-lot/payment events; no RTA |
 | posted cross-month refund-recovery resolution | system `Card Debt Adjustment` | required; system `Inflow: Ready to Assign`, `Transaction.kind = refund` | register + positive RTA activity + offsetting synthetic negative event to the refunding card's payment category (§3.5.3); no historical spending-lot mutation |
 | posted normal on-budget non-positive | required | required; must be `kind = spending`; `Uncategorized` while `needsCategory`; never `cc_payment` | register + envelope projection |
+| split normal on-budget non-positive (§3.11) | required | null on the row; every component `kind = spending`; any `Uncategorized` component keeps the row `needsCategory` | register once + one envelope event per component |
 | posted normal off-budget | required | null | register only, no envelope effect |
 | staged imported card row | required when known, otherwise `Unknown Payee` | null | register included; excluded from envelope projection until resolved |
 | staged imported cash inflow with creditDebt | `Unknown Payee` or known | null; `stage_metadata_json.proposed_category_id` may name a `spending` category | register included; excluded from envelope projection until resolved |
@@ -405,6 +408,24 @@ For any on-budget cash/checking/savings/credit-card account A and statement date
 
 Off-budget reconciliation is not part of the v1 UI; off-budget accounts remain register-only and any future reconciliation must be budget-neutral.
 
+### 3.11 Split transactions
+
+A split allocates one physical outflow across several spending categories. It is a category edit, not a new transaction: the row keeps its account, date, amount, payee, import identity, cleared state, and reconciliation membership; only `category_id` (null while split) and `splits` change.
+
+Invariants (service-enforced, tested):
+
+- Only `kind = normal`, non-positive rows on budget-eligible accounts may be split. Inflows point at RTA only; refunds, transfer legs, opening balances, and adjustments are never split. A split row cannot be paired as a transfer.
+- At least two components; each component amount is nonzero with the parent's sign; the checked sum equals the parent amount exactly. The engine never adjusts a component to fix rounding; rule-created percentage splits use the largest-remainder method so the sum is exact by construction.
+- Every component targets a `kind = spending` category. `Uncategorized` is permitted and leaves the row `needsCategory` (partial categorization).
+- Replay emits one envelope event per component in component order. For a credit card each component gets its own provenance lot keyed by `(transaction, component index)`; the funded/credit split of §3.5.2 is computed per component.
+- A linked card refund of a split purchase names `refund_of_component_index`; its materialized category is that component's category and its refundable cap is that component's lot. A refund without a component address whose origin is (or becomes) split, or whose component no longer exists, is staged `missingRefundOrigin` — the §3.8 origin-edit rule. Categorizing a split row to one category removes the split; dependent refunds drop their component address and follow the single category.
+- Amount edits on a split manual row are rejected until the split is removed or re-entered; date, memo, payee, approval, and cleared edits are unaffected.
+- Reports, the assistant, and schedule matching aggregate per component (`docs/DESIGN.md` D3.4); the register shows the parent once.
+
+### 3.12 Schedules
+
+A schedule is an *expected* event, never a transaction. Occurrences are stored only when matched, entered, or skipped; every other occurrence is derived from the recurrence rule. Matching links an existing row to an expected occurrence by a deterministic score (`docs/DESIGN.md` D5.3) and opens a Review Queue item when ambiguous; "Enter" creates a manual row through `addManualTransaction`/`createManualTransferPair` exactly once; nothing is created automatically. Projected balances add unmatched expected amounts to the register balance and are never part of replay, the oracle, or the register.
+
 ### 3.10 Worked three-month golden scenario
 
 Use USD, one checking account, one credit card, categories `Rent`, `Dining`, `Groceries`, and one credit-card payment category. The credit card begins at -$200 with pre-existing debt and no payment-category funding.
@@ -503,6 +524,7 @@ For every linked credit card, the onboarding UI displays a representative balanc
   2. **Closed-month append**: if normalized `posted` converts to a budget date in a `ClosedMonth`, append the new remote row as `staged` with `stage_reason = closedMonthImport`, no category, and no automatic card/refund reclassification. It is included in that account's register, excluded from projection, and the cursor may advance after this append-only account commit. Existing closed-month rows are never modified by this pass; after an audited reopen, the normal replay/re-staging workflow may resolve them.
   3. **Card guard/staging**: if the account is an on-budget credit card and the row would make `projectionBalance` positive, or is an oversized/cross-month/missing-origin refund, or is an unlinked positive card inflow → `staged` with the appropriate `stage_reason`, no category. For any staged-row resolution guard, `projectionBalance` is recomputed as if that row were posted; the staged row's register-only inclusion is not used as the guard input.
   4. **Transfer detection**: not automatic in v1; proceeds as a normal row (step 5–6).
+  4½. **Automation rules** (`docs/DESIGN.md` D4): enabled rules run once here, in order, against the raw `imported_description`; a rule category replaces the defaults of steps 5–6, a rule split replaces the category, a rule payee rename keeps the raw description. Rules never run on the closed-month append of step 2, never change amounts/dates/identity, and every application is audited. The same pass runs for file imports (D6).
   5. **Payee auto-categorization**: normalize `payee` using NFKC + uppercase + whitespace collapse. If an exact normalized payee with a `last_used_category_id` exists, auto-categorize only when the referenced category is visible (`hidden = false`), belongs to this budget, is not `cc_payment`, and its category kind matches the sign: positive amount → `kind = inflow`; non-positive amount → `kind = spending`. Set `posting_state = posted`, `approved = false`. A normal non-positive row can never be assigned to the RTA/inflow category, and a normal positive row can never be assigned to a spending category. If the remembered category is hidden, system-ineligible, or sign-incompatible, fall through to the sign default.
   6. **Sign default**: if no auto-categorization matched, for a non-positive on-budget amount set `posting_state = needsCategory`, `category_id = Uncategorized`, `approved = false`; for a positive on-budget amount set `category_id = Inflow: Ready to Assign`, `posting_state = posted`, `approved = false`. Off-budget rows remain register-only with no category.
 - When the user explicitly categorizes or recategorizes a normal transaction to a visible, non-system, sign-eligible category, update that payee's `last_used_category_id` in the same mutation. Do not update it for `Uncategorized`, RTA, `cc_payment`, hidden/system categories, staged rows, or automatic fallback. This makes future auto-categorization deterministic and auditable.
@@ -673,7 +695,7 @@ xcodebuild -project LedgerBar.xcodeproj -scheme LedgerBar \
 
 ### 6.3 Database and query shape
 
-All schema migrations are explicit GRDB migrations. Every child table has `budget_id` and a composite/ordinary FK as appropriate. SQLite row-local `CHECK` constraints/triggers enforce enum values, Int64-range/storage bounds, unique allocation/import identities, foreign keys, one `cc_payment` category per credit-card account, system-category immutability, and parent/child transfer/reconciliation references. `MonthlyCategoryAllocation.budgeted_milliunits` intentionally has no unconditional SQL `>= 0` check because an audited negative row is legal only as the result of `moveMoney`; the mutation service enforces that provenance, while `setBudgeted` inputs remain nonnegative. The mutation service also enforces derived or cross-row rules that SQLite cannot express in an ordinary `CHECK`: no positive normalized credit-card balance, valid card payment amount, exactly two equal/opposite transfer legs, category-required matrix, staged-resolution rules, and month-aware conservation. The plan must label each rule as SQL-enforced or service-enforced rather than claiming a cross-row `CHECK`.
+All schema migrations are explicit GRDB migrations. Every child table has `budget_id` and a composite/ordinary FK as appropriate. Migrations `v10`–`v15` (splits/imported description/file source, automation rules, file import, reports, schedules, app settings) are additive; the `transactions` mirror was rebuilt once (v10) to admit `source_kind = 'file'`. The database may hold several budgets (D8); the loaded `BudgetWorkspace` is always exactly one of them, mirror identities that were global sentinels are scoped by budget, and `app_settings.activeBudgetID` records the active one. SQLite row-local `CHECK` constraints/triggers enforce enum values, Int64-range/storage bounds, unique allocation/import identities, foreign keys, one `cc_payment` category per credit-card account, system-category immutability, and parent/child transfer/reconciliation references. `MonthlyCategoryAllocation.budgeted_milliunits` intentionally has no unconditional SQL `>= 0` check because an audited negative row is legal only as the result of `moveMoney`; the mutation service enforces that provenance, while `setBudgeted` inputs remain nonnegative. The mutation service also enforces derived or cross-row rules that SQLite cannot express in an ordinary `CHECK`: no positive normalized credit-card balance, valid card payment amount, exactly two equal/opposite transfer legs, category-required matrix, staged-resolution rules, and month-aware conservation. The plan must label each rule as SQL-enforced or service-enforced rather than claiming a cross-row `CHECK`.
 
 Required schema-level rules include:
 

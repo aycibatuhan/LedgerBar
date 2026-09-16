@@ -8,8 +8,10 @@ struct SettingsView: View {
                 .tabItem { Label("SimpleFIN", systemImage: "link") }
             BackupSettingsPane()
                 .tabItem { Label("Backup", systemImage: "externaldrive") }
+            AssistantSettingsPane()
+                .tabItem { Label("Assistant", systemImage: "sparkles") }
         }
-        .frame(width: 560, height: 520)
+        .frame(width: 600, height: 560)
     }
 }
 

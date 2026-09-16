@@ -152,6 +152,7 @@ extension BudgetWorkspace {
         for row in [a, b] {
             guard row.postingState != .voided else { throw MutationError.transactionNotFound }
             guard row.transferPairID == nil else { throw MutationError.transferLegsInvalid }
+            guard row.splits == nil else { throw MutationError.splitNotAllowed }
             guard row.cleared != .reconciled else { throw MutationError.reconciledTransaction }
             guard row.sourceKind != .system else { throw MutationError.systemEntityImmutable }
             guard !isMonthClosed(row.date.budgetMonth) else { throw MutationError.closedMonth }
@@ -371,7 +372,8 @@ extension BudgetWorkspace {
             throw MutationError.closedMonth
         }
         let requiresSoftVoid = legs.contains {
-            $0.sourceKind == .simplefin || reconciliationMembership.contains($0.id) || $0.cleared == .reconciled
+            $0.sourceKind == .simplefin || $0.sourceKind == .file
+                || reconciliationMembership.contains($0.id) || $0.cleared == .reconciled
         }
 
         var copy = self
@@ -550,6 +552,7 @@ extension BudgetWorkspace {
     public mutating func linkRefundOrigin(
         _ transactionID: TransactionID,
         originID: TransactionID,
+        componentIndex: Int? = nil,
         nowEpoch: Int64
     ) throws {
         guard var row = transactions[transactionID] else { throw MutationError.stagedRowNotFound }
@@ -560,10 +563,18 @@ extension BudgetWorkspace {
               origin.amountMilliunits < 0,
               origin.kind == .normal
         else { throw MutationError.refundOriginInvalid }
+        if let components = origin.splits {
+            guard let componentIndex, components.indices.contains(componentIndex) else {
+                throw MutationError.refundOriginInvalid
+            }
+        } else {
+            guard componentIndex == nil else { throw MutationError.refundOriginInvalid }
+        }
 
         var copy = self
         row.kind = .refund
         row.refundOfTransactionID = originID
+        row.refundOfComponentIndex = componentIndex
         var meta = row.stageMetadata ?? StageMetadata()
         meta.refundOfTransactionID = originID
         row.stageMetadata = meta
