@@ -75,7 +75,9 @@ LEDGERBAR_DB_PATH=/tmp/ledgerbar-smoke.sqlite \
 ```
 
 This is also the correct way to produce README screenshots: seed the
-scratch database with synthetic data and never capture a real budget.
+scratch database with synthetic data and never capture a real budget. The
+images in `docs/images/` were captured this way from a demo "Household"
+budget (window sized 1560×900, dark appearance); replace them the same way.
 
 ### Ad-hoc signing boundary
 

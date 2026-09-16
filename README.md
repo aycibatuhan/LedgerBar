@@ -8,15 +8,17 @@ bank exports, and it never sends your finances anywhere: no telemetry, no
 LedgerBar server, no cloud, and an optional assistant that only talks to a
 model running on this machine.
 
-<!-- Screenshot slot: capture from a synthetic-data smoke run only (see
-     docs/DEVELOPMENT.md "Disposable smoke test"), save as
-     docs/images/budget-grid.png, add the path to PUBLIC_FILES.txt, then
-     uncomment:
 <p align="center">
-  <img src="docs/images/budget-grid.png" width="760"
-       alt="LedgerBar budget grid with the menu-bar summary popover">
+  <img src="docs/images/budget-grid.png" width="800"
+       alt="LedgerBar budget grid for one month: Budgeted, Activity, and Available per category, with Ready to Assign at the top">
 </p>
--->
+
+<p align="center">
+  <img src="docs/images/menu-bar.png" width="332"
+       alt="The menu-bar popover: Ready to Assign, assigned total, activity, and needs-attention counts for the month">
+</p>
+
+*Screenshots show a synthetic demo budget, not real bank data.*
 
 ## Where to look
 
@@ -91,6 +93,14 @@ model running on this machine.
   127.0.0.1; remote endpoints are refused by construction) and, without any
   model, still answers common questions deterministically. Changes it drafts
   need an explicit **Apply**.
+
+### A closer look
+
+| | |
+| --- | --- |
+| [![Register](docs/images/register.png)](docs/images/register.png) **Register.** Imported and manual rows side by side, with cleared and approval status. | [![Rules](docs/images/rules.png)](docs/images/rules.png) **Rules.** Each rule states its conditions and actions in plain words and shows how often it matched. |
+| [![Schedules](docs/images/schedules.png)](docs/images/schedules.png) **Schedules.** What is due in the next 30 days, projected balances, and every recurring item. | [![Reports](docs/images/reports.png)](docs/images/reports.png) **Reports.** Spending by category over the last twelve months, with the transactions behind each row. |
+| [![Ask LedgerBar](docs/images/assistant.png)](docs/images/assistant.png) **Ask LedgerBar.** Grounded answers from your own ledger, here with no model configured. | |
 
 ### Safety net
 

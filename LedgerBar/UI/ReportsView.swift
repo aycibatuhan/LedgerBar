@@ -148,6 +148,13 @@ struct ReportsView: View {
         .onChange(of: definition.kind) { _, kind in
             if !availableVisualizations.contains(definition.visualization) { definition.visualization = kind.defaultVisualization }
         }
+        .onChange(of: definition.breakdownByCategory) { _, _ in
+            // The breakdown toggle changes the chart menu (bar ↔ stacked bar);
+            // keep the selection inside it so the picker never shows blank.
+            if !availableVisualizations.contains(definition.visualization) {
+                definition.visualization = availableVisualizations.first ?? definition.kind.defaultVisualization
+            }
+        }
     }
 
     private var availableVisualizations: [ReportVisualization] {

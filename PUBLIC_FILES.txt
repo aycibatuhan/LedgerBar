@@ -148,4 +148,11 @@ Tools/xcodegen-version.txt
 docs/DESIGN.md
 docs/DEVELOPMENT.md
 docs/LOCAL-AI.md
+docs/images/assistant.png
+docs/images/budget-grid.png
+docs/images/menu-bar.png
+docs/images/register.png
+docs/images/reports.png
+docs/images/rules.png
+docs/images/schedules.png
 project.yml
