@@ -1,4 +1,4 @@
-# LedgerBar
+# <img src="LedgerBar/Resources/Assets.xcassets/AppIcon.appiconset/icon_128x128@2x.png" width="48" alt="" align="top"> LedgerBar
 
 A local-first, zero-based envelope budgeting app for macOS. Native SwiftUI,
 lives in your menu bar, stores everything in one local SQLite file, and can
