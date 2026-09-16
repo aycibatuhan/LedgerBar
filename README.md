@@ -1,9 +1,12 @@
 # <img src="LedgerBar/Resources/Assets.xcassets/AppIcon.appiconset/icon_128x128@2x.png" width="48" alt="" align="top"> LedgerBar
 
-A local-first, zero-based envelope budgeting app for macOS. Native SwiftUI,
-lives in your menu bar, stores everything in one local SQLite file, and can
-import read-only bank data through SimpleFIN Bridge. No telemetry, no
-LedgerBar server, no cloud.
+**Local-first envelope budgeting for macOS, from your menu bar.**
+
+LedgerBar keeps a zero-based budget in one SQLite file on your Mac. It can
+pull read-only bank data through SimpleFIN Bridge or import the files your
+bank exports, and it never sends your finances anywhere: no telemetry, no
+LedgerBar server, no cloud, and an optional assistant that only talks to a
+model running on this machine.
 
 <!-- Screenshot slot: capture from a synthetic-data smoke run only (see
      docs/DEVELOPMENT.md "Disposable smoke test"), save as
@@ -15,219 +18,227 @@ LedgerBar server, no cloud.
 </p>
 -->
 
+## Where to look
+
+| I want to… | Read |
+| --- | --- |
+| Install and use LedgerBar | This page: [Features](#features), [Getting started](#getting-started), [Your data](#your-data), [Scope and limitations](#scope-and-limitations) |
+| Understand the local assistant and its privacy boundary | [docs/LOCAL-AI.md](docs/LOCAL-AI.md) |
+| Build, test, or change the code | [CONTRIBUTING.md](CONTRIBUTING.md), then [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
+| Know exactly how the accounting engine behaves | [SPEC.md](SPEC.md) (governing specification) |
+| See why splits, rules, reports, schedules, and budgets are built the way they are | [docs/DESIGN.md](docs/DESIGN.md) |
+| Check licenses | [LICENSE](LICENSE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) |
+
 ## Features
 
-- **Envelope budgeting** — a monthly grid of Budgeted / Activity / Available
+### Budgeting
+
+- **Envelope budgeting.** A monthly grid of Budgeted / Activity / Available
   per category with inline assignment and an atomic **Move Money** flow.
   Ready to Assign turns red the moment you over-assign.
-- **Menu-bar summary** — the current month's Ready to Assign, assigned
-  total, and activity at a glance, with needs-attention counts and one-click
+- **Menu-bar summary.** The current month's Ready to Assign, assigned total,
+  and activity at a glance, with needs-attention counts and one-click
   **Sync Now**.
-- **Bank import via SimpleFIN** *(optional)* — connect once with a
-  single-use SimpleFIN Bridge Setup Token. Posted transactions and balances
-  sync on demand, and automatically at most once a day (re-checked on
-  launch, activation, and wake). The app is fully usable with manual entry
-  alone.
-- **Transaction register** — manual entry, search, and workflow filters
-  (Needs Category, Staged, Unapproved); approve/clear flags; guarded edit
-  and delete. Imported amounts stay provider-owned, and imported rows are
-  voided rather than silently merged or destroyed.
-- **Review Queue** — every sync conflict and balance discrepancy becomes an
-  explicit decision (keep local, accept remote, void, or audited
-  adjustment). Nothing is auto-resolved behind your back.
-- **Credit cards, done strictly** — negative-debt convention, an automatic
+- **Credit cards, done strictly.** Negative-debt convention, an automatic
   payment category per card, and per-category credit-overspending tracking.
-- **Transfers** — manual transfers between accounts (on- and off-budget),
-  plus explicit pairing of two imported rows as one transfer.
-- **Auto-categorization by exact payee** — categorize a payee once and
-  sign-compatible future imports follow it.
-- **Reconciliation** — statement-based reconcile with one deterministic
-  adjustment, and undo for the most recent reconciliation.
-- **Verified backups** — a consistent SQLite snapshot, integrity-checked
-  before it is written to the destination you choose.
-- **Split transactions** — allocate one purchase across several categories.
-  The bank row stays one row; only its budget allocation changes, and
-  card refunds can target a single component.
-- **Rules** — deterministic automation that renames payees, categorizes,
-  annotates, flags, or splits imported transactions as they arrive, with
-  a preview before any retroactive run and an audit note on every change.
-  The bank's original description is always kept.
-- **File import** — CSV (with a saved column mapping), OFX, and QFX
-  exports, run through the same review as bank sync: certain duplicates
-  are skipped, near matches are shown for you to decide, nothing merges.
-- **Reports** — spending by category, group, payee, or account; spending
-  over time; income vs spending; net worth; budget vs actual — with
-  explicit accounting semantics, period comparison, saved definitions,
-  and the transactions behind every number.
-- **Schedules** — expected bills, income, and card payments. Imports are
-  matched to them (ambiguous cases go to the Review Queue), overdue
-  expectations stay visible, and projected balances are labeled as such.
-  Nothing is entered automatically.
-- **Multiple budgets** — independent budgets in one database (personal,
-  household, sandbox) with a switcher, archive, export/import, and
-  nothing shared between them.
-- **Ask LedgerBar** *(optional, local-only)* — natural-language questions
-  answered from the ledger through a fixed set of typed tools. Works with
-  a local model server on this Mac (Ollama or any OpenAI-compatible server
-  on 127.0.0.1; remote endpoints are refused by construction) and, without
-  any model, still answers common questions deterministically. Changes it
-  drafts need an explicit Apply. See [docs/LOCAL-AI.md](docs/LOCAL-AI.md).
+- **Transfers.** Manual transfers between on- and off-budget accounts, plus
+  explicit pairing of two imported rows as one transfer.
+- **Multiple budgets.** Independent budgets in one database (personal,
+  household, sandbox) with a switcher, archive, export/import, and nothing
+  shared between them.
 
-## Requirements
+### Getting transactions in
+
+- **Bank sync via SimpleFIN** *(optional)*. Connect once with a single-use
+  SimpleFIN Bridge Setup Token. Posted transactions and balances sync on
+  demand and automatically at most once a day. Access is read-only;
+  LedgerBar can never move money. The app is fully usable with manual entry
+  alone.
+- **File import.** CSV (with a saved column mapping), OFX, and QFX exports go
+  through the same review as bank sync: certain duplicates are skipped, near
+  matches are shown for you to decide, and nothing merges silently.
+- **Transaction register.** Manual entry, search, workflow filters (Needs
+  Category, Staged, Unapproved), approve and clear flags, guarded edit and
+  delete. Imported amounts stay provider-owned, and imported rows are voided
+  rather than merged or destroyed.
+- **Split transactions.** Allocate one purchase across several categories.
+  The bank row stays one row, and card refunds can target a single
+  component.
+- **Review Queue.** Every sync conflict, balance discrepancy, and ambiguous
+  schedule match becomes an explicit decision. Nothing is auto-resolved
+  behind your back.
+- **Reconciliation.** Statement-based reconcile with one deterministic
+  adjustment, and undo for the most recent reconciliation.
+
+### Automation and insight
+
+- **Rules.** Deterministic automation that renames payees, categorizes,
+  annotates, flags, or splits imported transactions as they arrive, with a
+  preview before any retroactive run and an audit note on every change.
+  The bank's original description is always kept.
+- **Auto-categorization by exact payee.** Categorize a payee once and
+  sign-compatible future imports follow it.
+- **Schedules.** Expected bills, income, and card payments. Imports are
+  matched to them, overdue expectations stay visible, and projected
+  balances are labeled as projections. Nothing is entered automatically.
+- **Reports.** Spending by category, group, payee, or account; spending over
+  time; income vs spending; net worth; budget vs actual. Explicit accounting
+  semantics, period comparison, saved definitions, and the transactions
+  behind every number.
+- **Ask LedgerBar** *(optional, local-only)*. Natural-language questions
+  answered from your ledger through a fixed set of typed tools. Works with a
+  model server on this Mac (Ollama or any OpenAI-compatible server on
+  127.0.0.1; remote endpoints are refused by construction) and, without any
+  model, still answers common questions deterministically. Changes it drafts
+  need an explicit **Apply**.
+
+### Safety net
+
+- **Verified backups.** A consistent SQLite snapshot, integrity-checked
+  before it is written to the destination you choose.
+- **No silent history changes.** Imports are auditable, deletions are
+  guarded, and closed months are read-only.
+
+## Getting started
+
+### Requirements
 
 - macOS 15 or later.
-- To build: a Swift 6 toolchain. Xcode Command Line Tools are enough for
-  the executable and the local `.app`; full Xcode and XcodeGen 2.46.0 are
-  needed only for the signed, sandboxed bundle (see
-  [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)).
-- For bank sync (optional): a Setup Token from your
-  [SimpleFIN Bridge](https://bridge.simplefin.org) account. Access is
-  read-only; LedgerBar can never move money.
+- A Swift 6 toolchain to build the app. Xcode Command Line Tools are enough
+  for everyday use; full Xcode is needed only for live bank sync (see
+  below).
+- For bank sync *(optional)*: a Setup Token from your
+  [SimpleFIN Bridge](https://bridge.simplefin.org) account.
 
-## Install
+### Install
 
-No prebuilt binaries are distributed — you build LedgerBar from this
-repository. For an app that reads your bank data, that is deliberate: every
-line that touches your money is in this repo for you to read first.
+No prebuilt binaries are distributed. You build LedgerBar from this
+repository, which for an app that reads your bank data is deliberate: every
+line that touches your money is here for you to read.
 
 ```bash
-git clone <repository-url> LedgerBar
+git clone https://github.com/aycibatuhan/LedgerBar.git
 cd LedgerBar
 ./Tools/install-local-app.sh
 open /Applications/LedgerBar.app
 ```
 
 If `/Applications` is not writable, install into your user Applications
-folder instead: `LEDGERBAR_INSTALL_DIR="$HOME/Applications"
-./Tools/install-local-app.sh`. For a menu-bar-only bundle without the Dock
-icon, use `./Tools/build-local-app.sh` and launch
-`.build/Local/LedgerBar.app` directly.
+folder instead:
 
-Both bundles carry the LedgerBar icon: an "LB" monogram built from
-ledger-like strokes. The source drawing is `Design/AppIcon.svg`;
-`swift Tools/render-app-icon.swift LedgerBar/Resources/Assets.xcassets`
-regenerates the asset catalog from it with no third-party tools, and the
-menu-bar glyph is drawn from the same geometry at runtime.
+```bash
+LEDGERBAR_INSTALL_DIR="$HOME/Applications" ./Tools/install-local-app.sh
+```
 
-First launch runs onboarding: pick the budget currency, time zone, and
-first budget month. All three are fixed once the budget is created.
+For a menu-bar-only bundle without a Dock icon, run
+`./Tools/build-local-app.sh` and launch `.build/Local/LedgerBar.app`.
 
-One honest limitation of the self-built app: it is ad-hoc signed, which is
-fully sufficient for budgeting, but the SimpleFIN credential requires the
-app's Keychain access group, which ad-hoc signing cannot provide. LedgerBar
-preflights the Keychain and fails closed **before** your single-use Setup
-Token would be spent. Live bank sync therefore needs the development-signed
-build described in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+**Bank sync needs a signed build.** The self-built app is ad-hoc signed,
+which is fully sufficient for budgeting, but the SimpleFIN credential
+requires the app's Keychain access group, which ad-hoc signing cannot
+provide. LedgerBar checks this and fails closed *before* your single-use
+Setup Token would be spent. To sync live bank data, build the
+development-signed app as described in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md); it needs full Xcode and a free
+Apple Developer account.
 
-## Using the app
+### First launch
 
-The menu-bar popover shows the month at a glance; **Open LedgerBar** opens
+Onboarding asks for a budget name, currency, time zone, and first budget
+month. Currency, time zone, and first month are fixed once the budget is
+created.
+
+### Using the app
+
+The menu-bar popover shows the month at a glance. **Open LedgerBar** opens
 the full window with the budget grid, account registers, Reports,
-Schedules, Rules, and the Review Queue. The budget switcher at the top of
-the sidebar changes the active budget. The gear opens Settings (SimpleFIN,
-Backup).
+Schedules, Rules, Ask LedgerBar, and the Review Queue. The budget switcher
+at the top of the sidebar changes the active budget. The gear opens
+Settings (SimpleFIN, Backup, Assistant).
 
 When connecting SimpleFIN, a Setup Token that targets anything other than
-the official host is rejected locally first; the exact host is shown and
-sync proceeds only if you explicitly choose **Trust Host & Retry**. Setup
-Tokens are never written to disk, and the Access URL credential lives only
-in the Keychain.
+the official host is rejected locally first. The exact host is shown, and
+sync proceeds only if you explicitly choose **Trust Host & Retry**.
 
-## Status and scope
+To use Ask LedgerBar with a model, install [Ollama](https://ollama.com),
+pull a chat model, and point Settings → Assistant at `127.0.0.1`. Without a
+model the assistant still answers common questions from the ledger
+deterministically.
 
-LedgerBar is a personal project. v1 is deliberately narrow: correctness of
-the ledger and budget engine over feature breadth. The engine is gated by a
-deterministic replay model and a conservation oracle exercised by the test
-suite before any UI work.
+## Your data
 
-Current v1 boundaries you should know before moving your budget here:
+### Where it lives
+
+Everything is in one SQLite database. The development-signed sandboxed app
+uses
+`~/Library/Containers/com.ledgerbar.app/Data/Library/Application Support/LedgerBar/`;
+the ad-hoc bundle uses `~/Library/Application Support/LedgerBar/`. The
+database is unencrypted and relies on FileVault at rest.
+
+Before a schema upgrade, LedgerBar writes a verified copy of the previous
+database next to it (for example `ledgerbar.before-v10.sqlite`).
+
+### Backup
+
+Settings → Backup creates a consistent snapshot, verifies it with an
+integrity check, and only then copies it to the destination you choose. The
+backup is **unencrypted SQLite**; protect the destination.
+
+### Manual restore
+
+Restore is manual in v1.
+
+1. Quit LedgerBar.
+2. In the Application Support directory above, remove `ledgerbar.sqlite`,
+   `ledgerbar.sqlite-wal`, and `ledgerbar.sqlite-shm`.
+3. Copy your backup file to `ledgerbar.sqlite` in that directory.
+4. Relaunch LedgerBar.
+
+### Privacy and security
+
+- Nothing leaves your Mac except read-only requests to SimpleFIN Bridge,
+  and only if you connect it.
+- SimpleFIN Setup Tokens are single-use, never written to disk, and claimed
+  only against `bridge.simplefin.org` or a host you explicitly trust. The
+  Access URL credential lives in one Keychain item
+  (`WhenUnlockedThisDeviceOnly`, non-synchronizable). Redirects are refused,
+  every request is validated against an exact allowlist, and logs are
+  redacted.
+- Ask LedgerBar connects only to loopback addresses. The model never gets
+  database access, only typed tools; transaction text is treated as data,
+  never as instructions; and conversations are stored locally and can be
+  cleared. Details in [docs/LOCAL-AI.md](docs/LOCAL-AI.md).
+
+## Scope and limitations
+
+LedgerBar is a personal project. v1 favors correctness of the ledger and
+budget engine over feature breadth. Before moving your budget here, know
+that:
 
 - One currency per budget; currency, time zone, and first month are fixed
   at creation.
 - One SimpleFIN connection per budget (it may expose many institutions and
-  accounts).
+  accounts). Pending bank transactions are not imported, and SimpleFIN
+  history is roughly 90 days (a provider constraint).
 - Only the current month can be assigned or reallocated; past and future
   months are read-only (past months can be closed and reopened).
-- The app ships with a starter set of category groups and categories, plus
-  an automatic payment category per credit card. Categories and groups can
-  be added and renamed from the budget grid, and categories can be hidden
-  (archived — history is kept, never deleted) and unhidden via the row's
-  context menu. Reordering categories and groups is not yet supported.
-- Restore is manual (documented below); there is no restore UI.
+- Categories and groups can be added, renamed, and hidden (history is kept),
+  but not yet reordered.
+- Credit cards cannot go positive in v1; overpayments and cash advances are
+  rejected or staged for review.
+- Restore is manual; there is no restore UI.
 - Not yet: QIF import, CSV export, goals, multi-currency, cloud sync, iOS.
-  The design behind splits, rules, file import, reports, schedules, and
-  multiple budgets is in [docs/DESIGN.md](docs/DESIGN.md).
-- Pending bank transactions are not imported; SimpleFIN history is roughly
-  90 days (a provider constraint).
-- Credit cards cannot go positive in v1 — overpayments and cash advances
-  are rejected or staged for review.
 
-## Backup and manual restore
+## Contributing
 
-Settings → Backup creates a consistent snapshot via the GRDB backup API,
-verifies it with `PRAGMA integrity_check`, and only then copies it to your
-chosen destination. The backup is **unencrypted SQLite**; protect the
-destination (FileVault, access controls).
-
-Restore is manual in v1. A development-signed sandboxed app uses
-`~/Library/Containers/com.ledgerbar.app/Data/Library/Application Support/LedgerBar/`;
-the unsandboxed ad-hoc/manual bundle uses
-`~/Library/Application Support/LedgerBar/`.
-
-1. Quit LedgerBar.
-2. In the appropriate LedgerBar Application Support directory above, remove
-   `ledgerbar.sqlite`, `ledgerbar.sqlite-wal`, and `ledgerbar.sqlite-shm`.
-3. Copy your backup file to `ledgerbar.sqlite` in that same directory.
-4. Relaunch LedgerBar. The app rebuilds its observations from the replaced
-   database on launch.
-
-## Security posture
-
-- SimpleFIN Setup Tokens are single-use, never persisted, and claimed only
-  against `bridge.simplefin.org` or a host you explicitly trust.
-- The Access URL credential lives in one Keychain item
-  (`WhenUnlockedThisDeviceOnly`, non-synchronizable); SQLite stores only a
-  reference. Redirects are refused; every request is validated against the
-  approved host and exact path allowlist; errors and logs are redacted.
-- The local database is unencrypted and relies on FileVault at rest.
-
-## Building from source
-
-With Command Line Tools only:
-
-```bash
-swift test               # headless correctness gate — must be green
-swift build              # builds LedgerCore + the LedgerBar executable
-swift run LedgerBar      # runs the real SwiftUI app (menu bar + window)
-```
-
-`SPEC.md` is the governing specification. Repository layout, database
-paths, the SimpleFIN capture gate, the signed native gates, and the
-publication workflow are documented in
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
-
-## Contributing and support
-
-Bug reports and questions are welcome as issues. The v1 scope above is
-intentional, and the engine is gated by a strict correctness suite — if you
-want to propose a change, please open an issue to discuss it before
-writing code.
+Bug reports and questions are welcome as issues. The v1 scope is
+intentional and the engine is gated by a strict correctness suite, so
+please open an issue to discuss a change before writing code.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers building, testing, the design
+documents, the app icon, and how this repository is published.
 
 ## License
 
 LedgerBar is licensed under the Apache License, Version 2.0. See
-[LICENSE](LICENSE).
-
-LedgerBar's third-party dependencies remain under their respective upstream
-licenses. Their exact versions, source revisions, and license texts are
-recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), with package
-resolution recorded in `Package.swift` and `Package.resolved`.
-
-## Public source transparency
-
-This repository is published through an explicit allowlist:
-`PUBLIC_FILES.txt` names every published file, and
-`Tools/check-public-files.sh` verifies — fail-closed — that nothing
-generated, private, or credential-bearing is included in the tree or in
-reachable history. The maintainer workflow is described in
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+[LICENSE](LICENSE). Third-party dependencies remain under their upstream
+licenses, recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
