@@ -202,6 +202,17 @@ Restore is manual in v1.
 3. Copy your backup file to `ledgerbar.sqlite` in that directory.
 4. Relaunch LedgerBar.
 
+### Deleting data
+
+- **A closed account** can be deleted from its right-click menu in the
+  sidebar after you type its name. Its transactions and anything that only
+  belonged to it go with it. Use Show Closed Accounts at the bottom of the
+  account list to find closed accounts.
+- **Everything** can be erased in Settings → Backup → Erase All Data after
+  you type ERASE. Every budget, the SimpleFIN credential, assistant history,
+  and settings are removed, and LedgerBar starts over at first-launch setup.
+  Backups you saved elsewhere are not touched.
+
 ### Privacy and security
 
 - Nothing leaves your Mac except read-only requests to SimpleFIN Bridge,

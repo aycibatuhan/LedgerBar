@@ -6,6 +6,7 @@ import SwiftUI
 /// results are inspectable under "Sources"; proposals need an explicit
 /// Apply.
 struct AssistantView: View {
+    @Environment(\.openSettings) private var openSettings
     @Environment(AppModel.self) private var model
     @State private var question = ""
     @State private var showSettingsHint = false
@@ -51,7 +52,9 @@ struct AssistantView: View {
                     Task { await model.clearAssistantHistory() }
                 } label: { Label("Clear Conversation", systemImage: "trash") }
                     .disabled(model.assistantTurns.isEmpty)
-                SettingsLink { Label("Assistant Settings", systemImage: "gearshape") }
+                Button {
+                    bringWindowToFront(matching: isSettingsWindow) { openSettings() }
+                } label: { Label("Assistant Settings", systemImage: "gearshape") }
             }
         }
         .onAppear {

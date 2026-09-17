@@ -514,8 +514,46 @@ struct BackupSettingsPane: View {
             }
             .buttonStyle(.borderedProminent)
             .accessibilityIdentifier("ledgerbar.backup-now")
+
+            Divider().padding(.vertical, 6)
+
+            Text("Erase All Data").font(.title3.bold())
+            Text("Removes every budget, account, transaction, rule, schedule, report, assistant conversation, and setting, deletes the SimpleFIN credential from the Keychain, and returns LedgerBar to first-launch setup. The pre-upgrade safety copy next to the database is removed too. Backups you saved elsewhere are not touched. This cannot be undone, so back up first if you might want anything back.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let error = model.actionError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Button("Erase All Data…", role: .destructive) {
+                eraseConfirmation = ""
+                confirmingErase = true
+            }
+            .disabled(erasing)
+            .accessibilityIdentifier("ledgerbar.erase-all")
             Spacer()
         }
         .padding(20)
+        .alert("Erase all LedgerBar data?", isPresented: $confirmingErase) {
+            TextField("Type ERASE to confirm", text: $eraseConfirmation)
+            Button("Erase Everything", role: .destructive) {
+                guard eraseConfirmation == "ERASE" else { return }
+                erasing = true
+                Task {
+                    _ = await model.eraseAllData()
+                    erasing = false
+                }
+            }
+            .disabled(eraseConfirmation != "ERASE")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Every budget and the SimpleFIN connection will be permanently removed. Type ERASE to continue.")
+        }
     }
+
+    @State private var confirmingErase = false
+    @State private var eraseConfirmation = ""
+    @State private var erasing = false
 }

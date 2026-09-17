@@ -44,6 +44,7 @@ public enum MutationError: Error, Equatable, Sendable {
     case accountNotFound
     case accountClosed
     case accountNotClosed
+    case accountHasCrossAccountLinks
     case categoryRequired
     case categoryNotAllowed                  // kind/sign mismatch, cc_payment direct use, system misuse
     case cardBalanceWouldBecomePositive

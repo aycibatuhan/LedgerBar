@@ -99,34 +99,20 @@ actor SyncCoordinator {
             do {
                 try await validateConnection(service: service, expected: connectionPin)
                 let window = try SimpleFINRequestWindow.recurring(lastSuccessfulPostedEpoch: cursor)
-                let request = SimpleFINRequest(window: window, accountID: link.remoteAccountID)
-                let requestLog = try await service.beginSyncRequest(
-                    connectionID: "primary",
-                    accountID: link.localAccountID,
-                    requestedStartEpoch: window.startEpoch,
-                    requestedEndEpoch: window.endEpoch,
-                    startedAtEpoch: nowEpoch
+                // Network stays outside the write transaction (§6.4). A window
+                // longer than SimpleFIN's 45-day limit is fetched in pages.
+                let response = try await fetchPaged(
+                    client: client,
+                    service: service,
+                    windows: try SimpleFINHistoryPaging.windows(
+                        startEpoch: window.startEpoch,
+                        endEpoch: window.endEpoch,
+                        nowEpoch: max(nowEpoch, nowEpochProvider())
+                    ),
+                    remoteAccountID: link.remoteAccountID,
+                    localAccountID: link.localAccountID,
+                    nowEpoch: nowEpoch
                 )
-                // Network stays outside the write transaction (§6.4).
-                let response: SimpleFINAccountsResponse
-                do {
-                    response = try await client.fetchAccounts(request)
-                    try await service.finishSyncRequest(
-                        requestLog,
-                        status: .succeeded,
-                        completedAtEpoch: nowEpoch
-                    )
-                } catch {
-                    let details = Self.httpDetails(for: error)
-                    try? await service.finishSyncRequest(
-                        requestLog,
-                        status: .failed,
-                        completedAtEpoch: nowEpoch,
-                        httpStatus: details.code,
-                        retryAfterSeconds: details.retryAfterSeconds
-                    )
-                    throw error
-                }
 
                 // One atomic commit per account: the engine's imports, pause
                 // decision, and cursor land together or not at all.
@@ -365,29 +351,23 @@ actor SyncCoordinator {
             balanceDateEpoch: balanceDateEpoch,
             endpointEndDateIsInclusive: true
         )
-        let requestLog = try await service.beginSyncRequest(
-            connectionID: "primary",
-            requestedStartEpoch: window.startEpoch,
-            requestedEndEpoch: window.endEpoch,
-            startedAtEpoch: nowEpoch
-        )
         let response: SimpleFINAccountsResponse
         do {
-            response = try await client.fetchAccounts(SimpleFINRequest(window: window, accountID: remoteAccountID))
-            try await service.finishSyncRequest(
-                requestLog,
-                status: .succeeded,
-                completedAtEpoch: nowEpoch
+            // Initial history spans up to 90 days; SimpleFIN rejects ranges
+            // over 45 days, so the window is fetched in pages and merged.
+            response = try await fetchPaged(
+                client: client,
+                service: service,
+                windows: try SimpleFINHistoryPaging.windows(
+                    startEpoch: window.startEpoch,
+                    endEpoch: window.endEpoch,
+                    nowEpoch: nowEpoch
+                ),
+                remoteAccountID: remoteAccountID,
+                localAccountID: nil,
+                nowEpoch: nowEpoch
             )
         } catch {
-            let details = Self.httpDetails(for: error)
-            try? await service.finishSyncRequest(
-                requestLog,
-                status: .failed,
-                completedAtEpoch: nowEpoch,
-                httpStatus: details.code,
-                retryAfterSeconds: details.retryAfterSeconds
-            )
             if case SimpleFINHTTPError.status(let code, _) = error,
                code == 401 || code == 403 {
                 try await pauseAllActiveLinks(
@@ -401,6 +381,48 @@ actor SyncCoordinator {
         }
         try await validateConnection(service: service, expected: connectionPin)
         return response
+    }
+
+    /// Fetches consecutive history pages for one remote account, logging each
+    /// request like a single fetch, and merges them. Any failed page fails the
+    /// whole fetch, so a partial history is never imported.
+    private func fetchPaged(
+        client: SimpleFINClient,
+        service: BudgetMutationService,
+        windows: [SimpleFINRequestWindow],
+        remoteAccountID: String,
+        localAccountID: AccountID?,
+        nowEpoch: Int64
+    ) async throws -> SimpleFINAccountsResponse {
+        var pages: [SimpleFINAccountsResponse] = []
+        for window in windows {
+            let requestLog = try await service.beginSyncRequest(
+                connectionID: "primary",
+                accountID: localAccountID,
+                requestedStartEpoch: window.startEpoch,
+                requestedEndEpoch: window.endEpoch,
+                startedAtEpoch: nowEpoch
+            )
+            do {
+                pages.append(try await client.fetchAccounts(SimpleFINRequest(window: window, accountID: remoteAccountID)))
+                try await service.finishSyncRequest(
+                    requestLog,
+                    status: .succeeded,
+                    completedAtEpoch: nowEpoch
+                )
+            } catch {
+                let details = Self.httpDetails(for: error)
+                try? await service.finishSyncRequest(
+                    requestLog,
+                    status: .failed,
+                    completedAtEpoch: nowEpoch,
+                    httpStatus: details.code,
+                    retryAfterSeconds: details.retryAfterSeconds
+                )
+                throw error
+            }
+        }
+        return try SimpleFINHistoryPaging.merge(pages)
     }
 
     private static func httpDetails(for error: Error) -> (code: Int?, retryAfterSeconds: Int64?) {

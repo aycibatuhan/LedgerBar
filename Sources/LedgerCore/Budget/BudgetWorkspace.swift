@@ -299,7 +299,18 @@ public struct BudgetWorkspace: Sendable, Equatable {
     }
 
     mutating func setAccount(_ row: AccountRow) { accounts[row.id] = row }
+    mutating func removeAccount(_ id: AccountID) { accounts.removeValue(forKey: id) }
     mutating func setCategory(_ row: CategoryRow) { categories[row.id] = row }
+    mutating func removeCategory(_ id: CategoryID) { categories.removeValue(forKey: id) }
+    mutating func removeReconciliation(_ id: ReconciliationID) {
+        reconciliations.removeValue(forKey: id)
+        reconciliationTransactions.removeValue(forKey: id)
+    }
+    mutating func removeSimpleFINImport(transactionID: TransactionID) { simpleFINImports.removeValue(forKey: transactionID) }
+    mutating func removeFileImport(transactionID: TransactionID) { fileImports.removeValue(forKey: transactionID) }
+    mutating func removeImportBatch(_ id: ImportBatchID) { importBatches.removeValue(forKey: id) }
+    mutating func removeSyncConflict(_ id: SyncConflictID) { syncConflicts.removeValue(forKey: id) }
+    mutating func removeSnapshotDiscrepancy(_ id: SnapshotDiscrepancyID) { snapshotDiscrepancies.removeValue(forKey: id) }
     mutating func setCategoryGroup(_ row: CategoryGroupRow) { categoryGroups[row.id] = row }
     mutating func setPayee(_ row: PayeeRow) { payees[row.id] = row }
     mutating func setTransferPair(_ row: TransferPairRow) { transferPairs[row.id] = row }

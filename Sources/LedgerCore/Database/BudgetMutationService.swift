@@ -165,6 +165,34 @@ public actor BudgetMutationService {
         try store.deleteBudget(id)
     }
 
+    /// Permanently deletes a closed account (see
+    /// `BudgetWorkspace.deleteClosedAccount`) and, in the same save, any
+    /// SimpleFIN link still bound to it.
+    @discardableResult
+    public func deleteClosedAccount(_ accountID: AccountID, nowEpoch: Int64) throws -> AccountDeletionSummary {
+        try syncTransact(nowEpoch: nowEpoch) { workspace, state in
+            let summary = try workspace.deleteClosedAccount(accountID: accountID, nowEpoch: nowEpoch)
+            if var connection = state {
+                connection.removeLinks(boundTo: accountID)
+                state = connection
+            }
+            return summary
+        }
+    }
+
+    /// Erases everything: Keychain credentials first (so a failure leaves the
+    /// references in place for a retry), then every database row. Afterwards
+    /// no budget is loaded and the app returns to onboarding.
+    public func eraseAllData(credentials: any SimpleFINCredentialStore) throws {
+        for itemID in try store.allCredentialItemIDs() {
+            try credentials.delete(itemID: itemID)
+        }
+        try store.eraseAllData()
+        workspace = nil
+        loadedSimpleFINState = nil
+        projectionCache.removeAll()
+    }
+
     /// Creates a budget from an exported snapshot with fresh identities.
     @discardableResult
     public func importBudget(_ export: BudgetExport, name: String?, nowEpoch: Int64) throws -> BudgetWorkspaceSnapshot {

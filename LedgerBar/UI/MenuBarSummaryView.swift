@@ -8,6 +8,7 @@ import SwiftUI
 struct MenuBarSummaryView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -57,12 +58,13 @@ struct MenuBarSummaryView: View {
                 .disabled(model.syncing || model.simplefin?.activeCredentialPin == nil)
                 Spacer()
                 Button("Open LedgerBar") {
-                    openWindow(id: "main")
-                    activateApp()
+                    bringWindowToFront(matching: isMainWindow) { openWindow(id: "main") }
                 }
                 .keyboardShortcut(.defaultAction)
                 .accessibilityIdentifier("ledgerbar.open-window")
-                SettingsLink {
+                Button {
+                    bringWindowToFront(matching: isSettingsWindow) { openSettings() }
+                } label: {
                     Image(systemName: "gearshape")
                 }
                 .help("Open Settings")

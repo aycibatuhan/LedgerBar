@@ -21,6 +21,8 @@ struct MainWindowView: View {
     @State private var showAddAccount = false
     @State private var renameAccountTarget: AccountRow?
     @State private var closeAccountTarget: AccountRow?
+    @State private var deleteAccountTarget: AccountRow?
+    @State private var deleteAccountConfirmation = ""
     @State private var voidCloseTarget: AccountRow?
     @State private var showManageBudgets = false
     @AppStorage("ledgerbar.showClosedAccounts") private var showClosedAccounts = false
@@ -189,6 +191,30 @@ struct MainWindowView: View {
         } message: { _ in
             Text("Close keeps every transaction and only stops the account from participating in the budget; it works when the register balance is zero and nothing is staged or waiting for a category. Void History and Close is for a duplicate or mistaken account: it voids all of its transactions first.")
         }
+        .alert(
+            "Delete “\(deleteAccountTarget?.name ?? "")” permanently?",
+            isPresented: Binding(
+                get: { deleteAccountTarget != nil },
+                set: { if !$0 { deleteAccountTarget = nil } }
+            )
+        ) {
+            TextField("Type the account name to confirm", text: $deleteAccountConfirmation)
+            Button("Delete Forever", role: .destructive) {
+                if let target = deleteAccountTarget, deleteAccountConfirmation == target.name {
+                    let id = target.id
+                    Task {
+                        if await model.deleteClosedAccount(id), selection == .account(id) {
+                            selection = .allAccounts
+                        }
+                    }
+                }
+                deleteAccountTarget = nil
+            }
+            .disabled(deleteAccountConfirmation != deleteAccountTarget?.name)
+            Button("Cancel", role: .cancel) { deleteAccountTarget = nil }
+        } message: {
+            Text(deleteAccountMessage(deleteAccountTarget))
+        }
         .confirmationDialog(
             "Void all history of \(voidCloseTarget?.name ?? "this account") and close it?",
             isPresented: voidCloseDialogBinding,
@@ -216,6 +242,17 @@ struct MainWindowView: View {
             get: { voidCloseTarget != nil },
             set: { if !$0 { voidCloseTarget = nil } }
         )
+    }
+
+    private func deleteAccountMessage(_ account: AccountRow?) -> String {
+        guard let account else { return "" }
+        let rows = (model.snapshot?.transactions ?? []).filter { $0.accountID == account.id }.count
+        var text = "The account and all \(rows) of its transactions are removed for good, along with its import history, review items, reconciliations, and schedules."
+        if liveRowCount(account) > 0 {
+            text += " Some of those transactions still count in past months, so those months will change."
+        }
+        text += " Rules that only apply to this account are removed. A link to SimpleFIN for it is removed too; linking the bank account again later imports its history fresh. This cannot be undone."
+        return text
     }
 
     private func liveRowCount(_ account: AccountRow) -> Int {
@@ -271,6 +308,11 @@ struct MainWindowView: View {
     private func accountMenu(for account: AccountRow) -> some View {
         if account.closed {
             Text("Closed account")
+            Divider()
+            Button("Delete Account…", role: .destructive) {
+                deleteAccountConfirmation = ""
+                deleteAccountTarget = account
+            }
         } else {
             Button("Rename…") { renameAccountTarget = account }
             Divider()

@@ -49,3 +49,34 @@ struct LedgerBarApp: App {
 func activateApp() {
     NSApplication.shared.activate()
 }
+
+/// Opens (or re-focuses) a window and makes sure it ends up in front. Opening
+/// from the menu-bar popover does not activate the app on its own, so a window
+/// that was already open would otherwise stay behind other apps. The window is
+/// looked up after the open request has been processed, un-minimized if
+/// needed, and ordered front.
+@MainActor
+func bringWindowToFront(matching isTarget: @escaping @MainActor (NSWindow) -> Bool, open: () -> Void) {
+    NSApplication.shared.activate()
+    open()
+    func raise() {
+        for window in NSApplication.shared.windows where isTarget(window) {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        }
+    }
+    DispatchQueue.main.async { raise() }
+    // A newly created window may appear a runloop turn later.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { raise() }
+}
+
+@MainActor
+func isSettingsWindow(_ window: NSWindow) -> Bool {
+    window.identifier?.rawValue == "com_apple_SwiftUI_Settings_window"
+}
+
+@MainActor
+func isMainWindow(_ window: NSWindow) -> Bool {
+    window.identifier?.rawValue == "main" || window.identifier?.rawValue.hasPrefix("main-") == true
+}

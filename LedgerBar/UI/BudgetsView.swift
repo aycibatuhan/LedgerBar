@@ -106,7 +106,7 @@ struct ManageBudgetsSheet: View {
             .disabled(deleteConfirmation != deleteTarget?.name)
             Button("Cancel", role: .cancel) { deleteTarget = nil }
         } message: {
-            Text("This is the only permanent deletion in LedgerBar: every account, transaction, rule, schedule, and report in this budget is removed and cannot be recovered. Export it first if in doubt. A budget still connected to SimpleFIN must be disconnected before deletion.")
+            Text("Every account, transaction, rule, schedule, and report in this budget is removed and cannot be recovered. Export it first if in doubt. A budget still connected to SimpleFIN must be disconnected before deletion.")
         }
     }
 }

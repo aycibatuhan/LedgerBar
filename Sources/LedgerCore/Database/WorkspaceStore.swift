@@ -219,6 +219,51 @@ public final class LedgerWorkspaceStore: @unchecked Sendable {
         }
     }
 
+    /// Keychain item identifiers referenced by any budget's SimpleFIN state:
+    /// the live credential, a pending replacement, and items still queued for
+    /// deletion. A full erase deletes these before the references disappear.
+    public func allCredentialItemIDs() throws -> [String] {
+        let payloads = try pool.read { db in
+            try Data.fetchAll(db, sql: "SELECT payload FROM simplefin_state")
+        }
+        var ids = Set<String>()
+        for payload in payloads {
+            let state = try JSONDecoder().decode(SimpleFINConnectionState.self, from: payload)
+            if let id = state.keychainItemID { ids.insert(id) }
+            if let id = state.pendingCredentialReplacement?.itemID { ids.insert(id) }
+            ids.formUnion(state.keychainItemIDsPendingDeletion)
+        }
+        return ids.sorted()
+    }
+
+    /// Erases every budget, setting, conversation, and log row, keeping only
+    /// the schema and migration history, then scrubs freed pages and removes
+    /// the pre-upgrade safety copy that sits next to the database. Backups the
+    /// user saved elsewhere are not touched.
+    public func eraseAllData() throws {
+        try pool.write { db in
+            try db.execute(sql: "PRAGMA defer_foreign_keys = ON")
+            let tables = try String.fetchAll(db, sql: """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'grdb_migrations'
+                ORDER BY name
+                """)
+            for table in tables {
+                try db.execute(sql: "DELETE FROM \"\(table)\"")
+            }
+        }
+        try pool.writeWithoutTransaction { db in
+            try db.execute(sql: "VACUUM")
+            try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+        }
+        let path = pool.path
+        if !path.isEmpty, path != ":memory:" {
+            let url = URL(fileURLWithPath: path)
+            let safetyCopy = url.deletingPathExtension().appendingPathExtension("before-v10.sqlite")
+            try? FileManager.default.removeItem(at: safetyCopy)
+        }
+    }
+
     /// Revision observation for one budget only.
     public func observeRevisions(budgetID: BudgetID) -> AsyncThrowingStream<Int64, Error> {
         let id = budgetID.description

@@ -370,7 +370,11 @@ final class AppModel {
     /// Launch/activation/wake all re-check the budget clock and the 24-hour
     /// sync threshold with elapsed-time checks — a timer alone is not
     /// dependable across sleep/App Nap (§6.4).
+    private var activationObserverStarted = false
+
     private func startActivationObserver() {
+        guard !activationObserverStarted else { return }
+        activationObserverStarted = true
         let handler: @Sendable (Notification) -> Void = { _ in
             Task { @MainActor [weak self] in
                 await self?.retryPendingCredentialOperations()
@@ -417,6 +421,58 @@ final class AppModel {
             actionError = friendlyMessage(error)
             await refresh()
             return nil
+        }
+    }
+
+    /// Permanently deletes a closed account. Returns true on success.
+    func deleteClosedAccount(_ accountID: AccountID) async -> Bool {
+        actionError = nil
+        let name = accountName(accountID)
+        do {
+            let summary = try await service.deleteClosedAccount(accountID, nowEpoch: nowEpoch)
+            await refresh()
+            var parts = ["Deleted \(name) and \(summary.removedTransactions) transaction(s)."]
+            if summary.removedSchedules > 0 { parts.append("\(summary.removedSchedules) schedule(s) for it were removed.") }
+            if summary.removedRules > 0 { parts.append("\(summary.removedRules) rule(s) that required it were removed.") }
+            if summary.updatedRules > 0 { parts.append("\(summary.updatedRules) rule(s) no longer mention it.") }
+            if summary.keptPaymentCategoryHidden {
+                parts.append("Its payment category had past assignments, so it was kept as a hidden category.")
+            }
+            infoMessage = parts.joined(separator: " ")
+            return true
+        } catch {
+            actionError = friendlyMessage(error)
+            await refresh()
+            return false
+        }
+    }
+
+    /// Erases every budget, the SimpleFIN credential, assistant history, and
+    /// settings, then returns to onboarding. Returns true on success.
+    func eraseAllData() async -> Bool {
+        guard !syncing else {
+            actionError = "Wait for the running sync to finish before erasing all data."
+            return false
+        }
+        actionError = nil
+        do {
+            observationTask?.cancel()
+            observationTask = nil
+            try await service.eraseAllData(credentials: credentials)
+            resetPerBudgetState()
+            snapshot = nil
+            projection = nil
+            simplefin = nil
+            budgets = []
+            assistantSettings = AssistantSettings()
+            await loadAssistantSettings()
+            phase = .onboarding
+            infoMessage = nil
+            return true
+        } catch {
+            actionError = "Erasing did not finish: \(friendlyMessage(error)) Nothing was erased from the database; try again."
+            await refresh()
+            return false
         }
     }
 
@@ -586,7 +642,8 @@ final class AppModel {
         case .closedMonth: return "That month is closed. Reopen it first to make changes."
         case .accountNotFound: return "Account not found."
         case .accountClosed: return "That account is closed."
-        case .accountNotClosed: return "Only review items for a closed account can be dismissed this way."
+        case .accountNotClosed: return "Only a closed account can be used for this. Close the account first."
+        case .accountHasCrossAccountLinks: return "A transaction on another account refers to this account (for example a refund of one of its purchases). Remove that link first."
         case .categoryRequired: return "Choose a category."
         case .categoryNotAllowed: return "That category is not allowed for this transaction."
         case .cardBalanceWouldBecomePositive: return "This would make the credit card balance positive, which v1 does not support."

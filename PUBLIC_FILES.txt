@@ -62,6 +62,7 @@ Sources/LedgerCore/Automation/WorkspaceAutomation.swift
 Sources/LedgerCore/Budget/BudgetWorkspace.swift
 Sources/LedgerCore/Budget/ProjectionTypes.swift
 Sources/LedgerCore/Budget/ReplayEngine.swift
+Sources/LedgerCore/Budget/WorkspaceAccountDeletion.swift
 Sources/LedgerCore/Budget/WorkspaceClosedAccountReviews.swift
 Sources/LedgerCore/Budget/WorkspaceMutations.swift
 Sources/LedgerCore/Budget/WorkspaceSyncResolution.swift
@@ -95,6 +96,7 @@ Sources/LedgerCore/SimpleFIN/SimpleFINClient.swift
 Sources/LedgerCore/SimpleFIN/SimpleFINConnectionState.swift
 Sources/LedgerCore/SimpleFIN/SimpleFINDecoder.swift
 Sources/LedgerCore/SimpleFIN/SimpleFINDiagnosticRedactor.swift
+Sources/LedgerCore/SimpleFIN/SimpleFINHistoryPaging.swift
 Sources/LedgerCore/SimpleFIN/SimpleFINModels.swift
 Sources/LedgerCore/SimpleFIN/SimpleFINPayloadHash.swift
 Sources/LedgerCore/SimpleFIN/SimpleFINSyncEngine.swift
@@ -106,6 +108,7 @@ Sources/LedgerCore/Support/Identifiers.swift
 Sources/LedgerCore/Support/MoneyParser.swift
 Sources/LedgerCore/Support/SourceOrderKey.swift
 THIRD_PARTY_NOTICES.md
+Tests/LedgerCoreTests/AccountDeletionAndEraseTests.swift
 Tests/LedgerCoreTests/AccountManagementTests.swift
 Tests/LedgerCoreTests/AssistantTests.swift
 Tests/LedgerCoreTests/AutomationRuleTests.swift
@@ -129,6 +132,7 @@ Tests/LedgerCoreTests/ReportTests.swift
 Tests/LedgerCoreTests/ScheduleTests.swift
 Tests/LedgerCoreTests/SimpleFINCaptureArtifactWriterTests.swift
 Tests/LedgerCoreTests/SimpleFINCredentialLifecycleTests.swift
+Tests/LedgerCoreTests/SimpleFINHistoryPagingTests.swift
 Tests/LedgerCoreTests/SimpleFINInitialLinkValidationTests.swift
 Tests/LedgerCoreTests/SimpleFINM581Tests.swift
 Tests/LedgerCoreTests/SimpleFINM582Tests.swift
